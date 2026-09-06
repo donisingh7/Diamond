@@ -1,0 +1,11 @@
+"use client";
+
+import { ArrowRight, LockKeyhole, UserRound, ShieldCheck } from "lucide-react";
+import { Brand } from "./navigation";
+import { GlassCard } from "@/components/ui/surface";
+import { Input, PasswordInput } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+
+export function LoginPresentation({ admin = false }: { admin?: boolean }) {
+  return <main className="login-page"><div className="login-brand"><Brand /></div><div className="login-composition"><div className="login-story"><p className="eyebrow">{admin ? "Diamond · Administration" : "The Diamond experience"}</p><h1 className="type-display">{admin ? <>Clarity.<br />In every detail.</> : <>A little instinct.<br /><span className="text-accent">A considered play.</span></>}</h1><p className="text-secondary">{admin ? "A focused space to manage the experience." : "Your markets, your moments. All in one place."}</p><div className="login-signature" aria-hidden="true"><span /><span /><span /></div></div><GlassCard variant="strong" className="login-card"><div className="stack"><span className="login-icon" aria-hidden="true">{admin ? <ShieldCheck /> : <LockKeyhole />}</span><div><h2 className="type-page-title">{admin ? "Admin Access" : "Welcome Back"}</h2><p className="text-secondary type-body-small">{admin ? "Sign in to your workspace." : "Good to see you again."}</p></div><p className="preview-notice">Presentation preview · Sign-in is not available yet.</p><form className="stack" onSubmit={event => event.preventDefault()}><Input label={admin ? "Login ID / Email" : "Login ID"} autoComplete="username" placeholder="Enter your login ID" leadingIcon={<UserRound />} /><PasswordInput label="Password" autoComplete="current-password" placeholder="Enter your password" /><Button size="lg" disabled trailingIcon={<ArrowRight aria-hidden="true" />}>Sign in</Button></form>{!admin && <div className="login-alternative"><p className="type-body-small text-secondary">Having trouble signing in?</p><Button variant="ghost" disabled trailingIcon={<ArrowRight aria-hidden="true" />}>Login with OTP</Button></div>}</div></GlassCard></div><footer className="login-footer type-caption">Diamond · {admin ? "Administration" : "Player access"}</footer></main>;
+}
