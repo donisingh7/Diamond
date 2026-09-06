@@ -474,6 +474,68 @@ idempotency, a human-readable non-ObjectId reference) are implemented, not alter
   `immutable` in the schema so it survives every future edit, and never regenerated on an
   idempotent replay. It is not returned until the transaction has committed.
 
+### Window 4A4 implementation clarification (no business rule changed)
+
+Bet editing (`PATCH /api/bets/:id`), immutable `betRevisions`, and the player bet **read**
+backend (`GET /api/bets`, `GET /api/bets/:id`). Backend / financial domain only — no My Bets /
+ticket / edit UI. The frozen rules above ("BET EDITING", "BET REVISIONS", the ₹1 minimum, no
+maximum, a bet cannot exceed available balance, the immutable payout snapshot, one wallet
+transaction per money movement) are implemented, not altered. The roadmap lists "My Bets" under
+Window 5; only its read **backend** is built here (no UI), which the Window 5 UI and the edit
+screen both need.
+
+- **Editing is same-identity.** An edit re-uses the SAME `normalizeBetEntry` engine as quote /
+  placement (never a second parser) and preserves `Bet._id`, `publicRef`, `userId`,
+  `marketId`, `marketRoundId` and `placedAt`. Only `version` advances (1 → 2 → 3 …) and
+  `lastEditedAt` is set. `PATCH /api/bets/:id` accepts only the entry method's raw input
+  (`numbers` / `digits` / `rawInput` + `palti`), `stakePaise`, `expectedVersion` and
+  `editRequestId` — a `.strict()` schema rejects every authoritative value and also `marketSlug`
+  (an edit cannot move a bet to another market/round — that would be a new bet).
+- **Payout multiplier is frozen at placement.** An edit NEVER re-reads
+  `platformSettings.payoutMultiplier`. `bet.payoutMultiplierSnapshot` is untouched by every
+  edit, so a bet placed at 90× stays 90× even if the admin rate is later 95×.
+- **Edit cutoff is server time, re-checked at the transactional boundary.** Editing is allowed
+  only while the bet is `ACTIVE` and `now < editCutoffAt` for the bet's OWN round
+  (`editCutoffAt = closesAt − 60 min`). The `getBettingWindow(...).canEditBet` gate is checked
+  before the transaction and **again inside it against a fresh clock** — a request that begins
+  before cutoff but commits at/after it fails `EDIT_WINDOW_CLOSED` (or `MARKET_CLOSED` past
+  close), with no change. New bet placement is unaffected and still runs until close.
+- **One revision per successful edit, immutable.** Each edit writes exactly one `betRevisions`
+  row: `betId`, `userId`, `fromVersion`, `toVersion`, full `before` / `after` canonical wager
+  snapshots (`entryMethod`, `entryMetadata`, `selections`, `totalStakePaise`), `walletDeltaPaise`
+  (`before.total − after.total`, schema-enforced), `editRequestId`, `editedAt`. Initial placement
+  has no revision; the first edit creates `1 → 2`. History is exposed through the bet detail
+  response (`revisions[]`, oldest first) — no `betId` / `userId` / `editRequestId` / Mongo `_id`
+  in the DTO.
+- **Wallet moves the difference only.** `stakeDelta = newTotalStakePaise − oldTotalStakePaise`.
+  Positive → a single `BET_EDIT_DEBIT` of exactly `stakeDelta`; negative → a single
+  `BET_EDIT_REFUND` of exactly `−stakeDelta`; zero → **no** wallet movement (the revision is
+  still written). The whole bet is never refunded and re-debited. Keys are deterministic —
+  `BET_EDIT_DEBIT:<betId>:v<toVersion>` / `BET_EDIT_REFUND:<betId>:v<toVersion>`.
+- **One transaction, no partial success.** Re-read + re-validate the bet / round → wallet
+  delta + ledger row → CAS `Bet` update (`version`/`status` filter) → `betRevisions` insert
+  commit or roll back together. An insufficient balance, a market-state failure, a stale
+  version or any later failure leaves the bet, its version, the wallet and the ledger unchanged
+  and writes no revision.
+- **Optimistic concurrency on `version`.** The request carries `expectedVersion`; the
+  in-session re-read plus a compare-and-set `updateOne({ version: expectedVersion, status:
+  "ACTIVE" })` plus the unique `betRevisions (betId, toVersion)` index mean two edits racing
+  from the same version cannot both win — the loser gets `STALE_VERSION` (409), never a silent
+  overwrite. A stale `expectedVersion` is `STALE_VERSION` before any wallet movement.
+- **`editRequestId` idempotency.** Backed by the unique `betRevisions (userId, editRequestId)`
+  index. A retry of the *same* logical edit (same target canonical wager) returns the
+  ALREADY-APPLIED bet — no second wallet movement, no second version bump — and does so
+  **before** the cutoff re-check, so a replay after cutoff still returns the previous successful
+  result rather than `EDIT_WINDOW_CLOSED`. The same id reused for a *different* target wager is
+  `DUPLICATE_REQUEST` (409).
+- **Reads are owner-only.** `GET /api/bets` returns only the caller's bets, newest first,
+  always bounded (`limit` 1–50, default 20, opaque cursor). `GET /api/bets/:id` resolves the
+  bet's `id` handle OR its `publicRef` and 404s (`BET_NOT_FOUND`) for a missing OR non-owned
+  bet identically — knowing a `publicRef` never grants access. `canEditNow` is
+  `getBettingWindow` for the bet's own round; `result` is the round's; settlement fields
+  (`winningNumber` / `payoutPaise` / `settledAt`) are `null` until the settlement engine exists
+  and are never fabricated.
+
 ## BET EDITING
 
 A player may edit the ENTIRE bet until:

@@ -418,3 +418,144 @@ disposable database and the temporary script were stopped and removed afterward.
 No live `npm run db:check` / `npm run db:seed` against the user's configured database was run
 in this window; all database verification used disposable replica sets. Window 2A visual
 quality remains pending Codex visual-browser refinement.
+
+## Window 4A4 handoff status
+
+Window 4A4 (bet editing + immutable bet revisions + the player My-Bets **read** backend) is
+complete. **Backend / financial domain only.** See ARCHITECTURE.md's "Window 4A4" section for
+the design, DOMAIN_RULES.md's "Window 4A4 implementation clarification" for the frozen-rule
+mapping, API_CONTRACTS.md's "Window 4A4 - implemented player bet read & edit contract" for exact
+shapes, and DATABASE.md's "Window 4A4 - bet editing & reads: no schema or index change".
+
+Implemented:
+
+- `modules/betting/services/bet-edit.service.ts` - `editBet(input, options?)`. Whole-wager
+  replacement of an ACTIVE bet through the **shared** `normalizeBetEntry` engine (never a second
+  parser); same-identity (`_id` / `publicRef` / `userId` / `marketId` / `marketRoundId` /
+  `placedAt` / `payoutMultiplierSnapshot` preserved, only `version` advances); `editRequestId`
+  idempotent-replay recovery **before** the cutoff re-check; `getBettingWindow(...).canEditBet`
+  gate for the bet's own round, re-checked inside the transaction against a fresh injectable
+  clock; one `withTransaction` doing the difference-only wallet movement
+  (`BET_EDIT_DEBIT` / `BET_EDIT_REFUND` / nothing) -> native compare-and-set `Bet.updateOne`
+  (`version`/`status` filter, `matchedCount 0` => `STALE_VERSION`) -> native `betRevisions`
+  insert; lost `(betId, toVersion)` / `(userId, editRequestId)` races recovered outside the
+  aborted transaction. `betEditWalletKey`, `compositionMatchesNormalized` helpers.
+- `modules/betting/services/bet-read.service.ts` - `listPlayerBets` (own bets, newest first,
+  bounded `limit` 1-50 default 20, opaque `(createdAt, _id)` cursor, optional `status` /
+  `market` filters, markets + rounds batch-loaded), `getPlayerBetDetail` (adds full
+  `revisions[]`, oldest first), `resolveOwnedBet` / `ownedBetFilter` (24-hex `id` handle OR
+  `publicRef`, always AND `userId`; `BET_NOT_FOUND` for missing OR non-owned - indistinguishable),
+  `toPlayerBetDTO` / `toBetRevisionDTO` / `entryMetadataOf`, `encodeBetCursor` / `decodeBetCursor`
+  / `clampBetListLimit`.
+- `modules/betting/validators/edit-bet-input.ts` - `editBetRequestSchema` (Zod discriminated
+  union on `entryMethod`, every branch `.strict()`, `expectedVersion: int>=1`,
+  `editRequestId: z.uuid()`, NO `marketSlug`), `toEditEntryInput`. Same method-input field names
+  as `quoteRequestSchema` / `placeBetRequestSchema`.
+- `modules/betting/validators/bet-query.ts` - `betsListQuerySchema` (`.strict()`: `limit`
+  coerced 1-50 default 20, `cursor`, `status?`, `market?`).
+- `src/app/api/bets/route.ts` - `GET` added alongside the existing `POST`.
+  `src/app/api/bets/[id]/route.ts` - `GET` + `PATCH` (ACTIVE PLAYER; `PATCH` same-origin;
+  `force-dynamic`; no `userId` from the client).
+- `lib/errors/domain-error.ts` - added `BET_NOT_FOUND` (404), `STALE_VERSION` (409).
+- Type-only model additions: `bet.model.ts` `BetRow`; `bet-revision.model.ts`
+  `BetRevisionRecord` / `BetRevisionDoc` / `BetRevisionRow`. No schema, validator, hook or
+  index changed anywhere.
+
+Deliberately **not** done (out of window): any My Bets / bet-slip / premium-ticket / edit UI,
+PNG/PDF or stored ticket files, withdrawal workflow, admin CRUD, admin bet/revision views,
+result declaration, settlement / `WIN_CREDIT` / payout credit, any Window 2A visual redesign.
+`withdrawals` and settlement collections are untouched. The multiplier is never refreshed on an
+edit. No sequencing was jumped beyond pulling the **My-Bets read backend** (no UI) into this
+window - the roadmap lists "My Bets" under Window 5, but the edit screen and the Window 5 UI
+both need these reads and Window 4A3's handoff already earmarked them.
+
+**Window 2A's visual design (colors, glass strength, ticket appearance) remains pending a
+dedicated Codex visual-browser refinement pass. This window built no UI and attempted no
+Window 2A visual redesign.** A future agent must not read this window's completion as visual
+sign-off. Remaining Window 4 scope is now UI only (bet slip, premium ticket, My Bets, edit
+screen); the backend for "Complete Betting Engine + Jodi + Crossing + Copy Paste + Palti + Bet
+Editing + Bet Revisions" is complete.
+
+## Verification record - 2026-09-06 (Window 4A4)
+
+| Check | Result |
+| --- | --- |
+| `npm.cmd run typecheck` | PASS; strict TypeScript incl. new services / validators / routes / tests |
+| `npm.cmd run lint` | PASS; no warnings |
+| `npm.cmd test` | PASS; 190 tests across 15 files (173 prior + 17 new in `bet-edit.test.ts`) |
+| `npm.cmd run test:integration` | PASS; 145 tests across 7 files (117 prior + 28 new in `bet-edit.integration.ts`) against a disposable MongoDB 8.2.6 replica set |
+| `npm.cmd run build` | PASS; `/api/bets` now GET+POST, `/api/bets/[id]` registered as a dynamic route handler |
+| `git diff --check` | PASS; no whitespace errors (LF->CRLF advisories only, matching repo convention) |
+| Manual HTTP/E2E verification | PASS - see below |
+
+New unit coverage (`bet-edit.test.ts`): `editBetRequestSchema` accepts each method with
+`expectedVersion` + `editRequestId`, rejects a missing / `0` / fractional `expectedVersion`, a
+missing / non-UUID `editRequestId`, and every `.strict()` violation (`marketSlug`,
+`clientRequestId`, `totalStakePaise`, `version`, cross-method `digits`, `userId`);
+`toEditEntryInput` per branch; `betsListQuerySchema` default 20 / range `[1,50]` / rejected
+stray param / accepted `status` + `market` (slug-normalised); `betEditWalletKey` determinism +
+shape; `compositionMatchesNormalized` true for the same canonical wager, false on order / stake
+/ method difference; `clampBetListLimit` (`undefined`->20, floor 1, cap 50, truncate); bet
+cursor `(createdAt, _id)` round-trip + malformed -> `INVALID_INPUT`; `ownedBetFilter` (`_id` for
+a 24-hex handle, upper-cased `publicRef` otherwise); `entryMetadataOf` by-method shape with no
+cross-method key leakage; `toBetRevisionDTO` field allow-list (exactly `after` / `before` /
+`editedAt` / `fromVersion` / `toVersion` / `walletDeltaPaise`); `toPlayerBetDTO` `canEditNow`
+true before cutoff / false at cutoff / false for a non-ACTIVE bet, outcome fields `null`, no
+internal foreign keys.
+
+New integration coverage (`bet-edit.integration.ts`, fixed injected clock): **reads** - a
+player lists only their own bets; bounded newest-first cursor pagination walks the whole
+history with no gaps or repeats; `status` filter; detail resolves by `id` handle **or**
+`publicRef` for the owner and is `BET_NOT_FOUND` for anyone else by either key. **edit success
+/ composition** - JODI add-a-selection v1->v2 with `id` / `publicRef` / `placedAt` /
+`marketRoundId` / `clientRequestId` preserved, `lastEditedAt` set, one revision (`fromVersion 1`
+/ `toVersion 2` / `before` `after` snapshots / `walletDeltaPaise -1000`); method changes
+JODI->CROSSING (`428` -> exact 9-selection engine order) and JODI->COPY_PASTE; Palti toggle
+5->9 selections; leading zeros persisted as strings; `v1->v2->v3` chain with a revision per step
+and a stable `publicRef`; **payout multiplier snapshot unchanged** after the platform rate is
+set to 95. **wallet delta** - larger wager debits exactly the difference via one
+`BET_EDIT_DEBIT` row (key `BET_EDIT_DEBIT:<betId>:v2`, `referenceType`/`referenceId`), smaller
+wager refunds exactly the difference via one `BET_EDIT_REFUND`, same-total edit writes a
+revision but **no** wallet row (`walletDeltaPaise 0`), an over-budget edit -> `INSUFFICIENT_BALANCE`
+with the bet / version / wallet unchanged and no revision. **cutoff boundaries** - exactly at
+`editCutoffAt` -> `EDIT_WINDOW_CLOSED` (nothing changed), one second before -> success, during
+`CLOSING_SOON` -> `EDIT_WINDOW_CLOSED`, after close -> `MARKET_CLOSED`, disabled market ->
+`MARKET_DISABLED`, and a cutoff crossed between the pre-check and the transaction -> caught at
+the transactional boundary with a full rollback. **concurrency** - two edits racing from
+`version 1` -> exactly one transitions to v2, the other `STALE_VERSION`, one revision, wallet
+moved at most once; a stale `expectedVersion` after a prior edit -> `STALE_VERSION`, no change.
+**idempotency** - replaying the same successful edit returns the same result with no second
+wallet movement or version bump; reusing an `editRequestId` for a different target wager ->
+`DUPLICATE_REQUEST`; replaying a successful edit **after the cutoff** still returns the previous
+result (not `EDIT_WINDOW_CLOSED`), while a fresh `editRequestId` after the cutoff still fails
+normally. **atomicity / scope** - a forced failure right after the wallet movement rolls the
+whole transaction back (balance restored, version 1, no revision, no ledger row); after several
+edits `withdrawals` / `WIN_CREDIT` / `WITHDRAWAL_*` counts are `0`, every round stays
+`settlementStatus: PENDING`, and the bet stays `ACTIVE` with `winningNumber` / `payoutPaise` /
+`settledAt` `null`.
+
+Manual HTTP verification used a **disposable** `mongodb-memory-server-core` replica set (seeded
+via `seedFoundation()` with the six markets + platform settings, then two ACTIVE players and one
+ACTIVE admin; every market's schedule widened to open-all-day / no edit lock in the throwaway DB
+so the wall clock never mattered) plus a real `next dev` on port 3838 - the user's configured
+`.env` / database was never touched; the temporary driver (`scratchpad/verify-4a4.ts`) was
+deleted before commit. 18 automated assertions, all PASS: unauthenticated `GET /api/bets` ->
+`401`; player + admin password logins issuing `diamond_session` cookies; `POST
+/api/wallet/mock-deposit` funding player 1; `POST /api/bets` JODI -> `200` with a `<CODE>-MMDD-`
+`publicRef`; `GET /api/bets` -> exactly the one bet, `canEditNow: true`, no `userId` /
+`marketId`; `GET /api/bets/<id>` and `GET /api/bets/<publicRef>` (lower-cased) -> `200`,
+`revisions: []`; `PATCH /api/bets/<id>` adding a selection with `expectedVersion: 1` -> `200`,
+`version: 2`, one `revisions[]` entry, `totalStakePaise` 4000; `GET /api/wallet/transactions`
+carrying one `BET_EDIT_DEBIT` row of exactly ₹10 (the stake difference) with no
+`idempotencyKey`; the same `editRequestId` replayed -> `200`, `version` still `2`; the same
+`editRequestId` with different numbers -> `409 DUPLICATE_REQUEST`; a stale `expectedVersion` ->
+`409 STALE_VERSION`; a smaller-wager `PATCH` -> `200`, `version: 3`, a `BET_EDIT_REFUND` row
+appears; `PATCH` with a mismatched `Origin` -> `403`; the second player reading or editing the
+first player's bet by id and by `publicRef` -> `404 BET_NOT_FOUND`; an ADMIN session on
+`GET /api/bets` and `PATCH /api/bets/[id]` -> `403`; and a final reconnect confirming exactly
+two `betRevisions`, zero `withdrawals`, zero `WIN_CREDIT`. The dev server, the disposable
+database and the temporary script were stopped and removed afterward.
+
+No live `npm run db:check` / `npm run db:seed` against the user's configured database was run in
+this window; all database verification used disposable replica sets. Window 2A visual quality
+remains pending Codex visual-browser refinement.

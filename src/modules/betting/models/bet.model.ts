@@ -1,4 +1,4 @@
-import { Schema, type InferSchemaType, type HydratedDocument } from "mongoose";
+import { Schema, type InferSchemaType, type HydratedDocument, type Types } from "mongoose";
 import { modelFor, schemaOptions, userRef, requiredText, nonnegativeInteger, twoDigit } from "@/lib/db/schema";
 import { safeAdd } from "@/lib/money";
 import { compositionFields, payoutField } from "./composition.schema";
@@ -35,4 +35,6 @@ betSchema.index({ userId: 1, clientRequestId: 1 }, { unique: true });
 /** Type-only exports (no schema/index change). `version` is the domain version, distinct from Mongoose `__v`. */
 export type BetRecord = InferSchemaType<typeof betSchema>;
 export type BetDoc = HydratedDocument<BetRecord>;
+/** Lean-read shape: the record plus the fields `.lean()` always returns (`timestamps: true`). */
+export type BetRow = BetRecord & { _id: Types.ObjectId; createdAt: Date; updatedAt: Date };
 export const Bet = modelFor("Bet", betSchema, "bets");

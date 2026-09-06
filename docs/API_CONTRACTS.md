@@ -289,3 +289,93 @@ this window), consistent with Window 4A1/4A2:
   ObjectId to the client); the receipt does not return `marketRoundId` at all;
 - the success response is `200` with `{ data: BetPlacementReceipt }` (not `201`), matching every
   other mutation route in this codebase, and carries `serverNow`.
+
+## Window 4A4 - implemented player bet read & edit contract
+
+Three route handlers: `GET /api/bets` (added alongside the existing `POST` in
+`src/app/api/bets/route.ts`), plus `GET` and `PATCH` in `src/app/api/bets/[id]/route.ts`. All
+`apiRoute`-wrapped with the shared `{data:...}` / `{error:{code,message}}` shape, all requiring
+an **ACTIVE PLAYER** session via `requirePlayer()` (anonymous -> `401 UNAUTHENTICATED`; **ADMIN**
+-> `403 FORBIDDEN` - PLAYER-only, not widened; a disabled/deleted user's stale cookie is
+rejected by `findActiveSessionUser`), all `export const dynamic = "force-dynamic"`. Identity is
+always the authenticated session - **no `userId` is accepted from the client**. Every response
+carries `serverNow` (ISO-8601). The two GETs are exempt from the same-origin check (matching
+`GET /api/auth/me`); `PATCH` requires a trusted `Origin` (`403` on mismatch).
+
+The roadmap sequences "My Bets" under Window 5; only its read **backend** ships here (no UI).
+`PATCH /api/bets/:id` completes the Window 4 "Bet Editing + Bet Revisions" scope.
+
+| Route | Request | `200` `data` | Notable errors |
+| --- | --- | --- | --- |
+| `GET /api/bets` | `?limit=` 1-50 (default 20), `?cursor=` opaque, `?status=ACTIVE\|WON\|LOST`, `?market=<slug>` (`.strict()`) | `{ bets: PlayerBetDTO[], nextCursor: string \| null, serverNow }` | `401`, `403`, `INVALID_INPUT` (400 - bad limit / stray param / malformed cursor), `MARKET_NOT_FOUND` (404 - unknown `market`) |
+| `GET /api/bets/[id]` | `[id]` = the bet `id` handle (24-hex) **or** its `publicRef` (case-insensitive) | `{ bet: PlayerBetDetailDTO, serverNow }` | `401`, `403`, `BET_NOT_FOUND` (404 - missing **or** non-owned, indistinguishable) |
+| `PATCH /api/bets/[id]` | `[id]` as above; body discriminated on `entryMethod`, each branch `.strict()`: `{ entryMethod:"JODI", numbers: string[] (1-100, each /^\d{2}$/), stakePaise: int>0, expectedVersion: int>=1, editRequestId: uuid }` / `{ entryMethod:"CROSSING", digits: /^\d+$/ (<=100), stakePaise, expectedVersion, editRequestId }` / `{ entryMethod:"COPY_PASTE", rawInput: string (1-2000), palti: boolean, stakePaise, expectedVersion, editRequestId }` | `{ bet: PlayerBetDetailDTO, serverNow }` | `401`, `403` (also cross-origin), `INVALID_INPUT` (400 - malformed shape, non-UUID id, `marketSlug` / `clientRequestId` / any authoritative field), `BET_NOT_FOUND` (404), `BET_ALREADY_SETTLED` (409), `STALE_VERSION` (409 - `expectedVersion` mismatch / lost concurrent edit), `DUPLICATE_REQUEST` (409 - `editRequestId` reused for a different target wager), `EDIT_WINDOW_CLOSED` / `MARKET_CLOSED` / `MARKET_DISABLED` / `MARKET_NOT_OPEN` (422/422/422/422), `ROUND_NOT_FOUND` (404), `INVALID_SELECTION` / `STAKE_BELOW_MINIMUM` / `MONEY_OUT_OF_RANGE` (422), `INSUFFICIENT_BALANCE` (422) |
+
+`PlayerBetDTO` =
+
+```text
+{ id, publicRef: "FB-0906-X7K29", market: { name, slug, code }, businessDate: "YYYY-MM-DD",
+  entryMethod, entryMetadata, selections: [{ number: "NN", stakePaise }], totalSelections,
+  totalStakePaise, payoutMultiplierSnapshot, status: "ACTIVE"|"WON"|"LOST", version,
+  placedAt: iso, lastEditedAt: iso | null, editCutoffAt: iso, closesAt: iso, canEditNow: boolean,
+  result: "NN" | null, winningNumber: "NN" | null, payoutPaise: number | null, settledAt: iso | null }
+```
+
+`PlayerBetDetailDTO` = `PlayerBetDTO & { revisions: BetRevisionDTO[] }` (oldest first).
+`BetRevisionDTO` = `{ fromVersion, toVersion, before, after, walletDeltaPaise, editedAt: iso }`
+where `before` / `after` = `{ entryMethod, entryMetadata, selections: [{ number, stakePaise }],
+totalStakePaise }`.
+
+- `id` is the bet's own handle (consistent with the placement receipt and the wallet DTOs);
+  the user-facing ticket reference is `publicRef`. **Never serialized:** `userId`, `marketId`,
+  `marketRoundId`, `clientRequestId`, `betId`, `editRequestId`, the ledger idempotency key, any
+  sub-document Mongo `_id`.
+- `entryMetadata` mirrors the persisted `bets.entryMetadata` shape - `{numbers}` (JODI, the raw
+  submitted list) / `{digits}` (CROSSING) / `{rawInput, palti}` (COPY_PASTE). Not authoritative
+  over `selections`. The raw composition is retained so the edit screen can reconstruct the
+  original method.
+- `canEditNow` = `getBettingWindow(...).canEditBet` for the bet's **own** round, AND
+  `status === "ACTIVE"` - `false` once `now >= editCutoffAt`, once the round closes, or once the
+  bet is settled.
+- `result` is the market round's declared 2-char result when present - not a per-bet outcome.
+  `winningNumber` / `payoutPaise` / `settledAt` are the per-bet settlement outcome and are
+  `null` until the settlement engine exists (Window 7) - never fabricated.
+- `walletDeltaPaise` on a revision is `before.totalStakePaise - after.totalStakePaise`:
+  negative = the wallet was debited that much, positive = refunded, zero = a same-total edit
+  (still recorded, no wallet movement).
+
+**Editing semantics.** An edit is a WHOLE-wager replacement that preserves the bet's identity
+(`_id`, `publicRef`, `userId`, `marketId`, `marketRoundId`, `placedAt`,
+`payoutMultiplierSnapshot`) and advances only `version` (1 -> 2 -> 3 ...). Everything is
+recomputed through the shared `normalizeBetEntry` engine; the payout multiplier snapshot is
+**not** refreshed. The wallet moves the **difference only** - `BET_EDIT_DEBIT` of
+`newTotal - oldTotal` when larger, `BET_EDIT_REFUND` of `oldTotal - newTotal` when smaller,
+nothing when equal. `Bet` update + wallet delta + `BET_EDIT_*` ledger row + `betRevisions`
+insert are one MongoDB transaction, re-validated (including the edit cutoff, against a fresh
+clock) at the transactional boundary - any partial failure leaves the bet, its version, the
+wallet and the ledger unchanged and writes no revision.
+
+**Concurrency.** `expectedVersion` is an optimistic lock: a compare-and-set
+`updateOne({ version: expectedVersion, status: "ACTIVE" })` plus the unique
+`betRevisions (betId, toVersion)` index mean two edits racing from the same version cannot both
+win - the loser gets `409 STALE_VERSION`, never a silent overwrite.
+
+**Idempotency.** `editRequestId` (client UUID) backed by the unique
+`betRevisions (userId, editRequestId)` index. A retry of the *same* logical edit returns the
+already-applied bet - no second wallet movement, no second version bump - and does so **before**
+the cutoff re-check, so a replay after the cutoff returns the previous successful result rather
+than `EDIT_WINDOW_CLOSED`. The same id reused for a *different* target wager is
+`409 DUPLICATE_REQUEST`.
+
+Deliberate, documented refinements of the "Proposed DTO conventions" sketch, consistent with
+Window 4A1/4A2/4A3:
+
+- `stakePaise` (integer paise), not `stakeRupees` decimal text - integer paise end to end.
+- `PATCH` takes no `marketSlug` (the API_CONTRACTS sketch's "Entire replacement input" is the
+  wager only; an edit cannot re-market a bet) and no `clientRequestId` (that is placement's
+  key; editing has `editRequestId`).
+- `GET /api/bets/:id` resolves the bet `id` handle OR the `publicRef` (the sketch says
+  "resolve publicRef"); knowing a `publicRef` never grants access (`404 BET_NOT_FOUND` for a
+  non-owned bet).
+- success is `200` with `{ data: ... }` (not `201`), matching every other route here, and
+  carries `serverNow`.

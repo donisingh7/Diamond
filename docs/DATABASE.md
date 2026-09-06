@@ -586,3 +586,53 @@ outside a ledgered movement — Mock Deposit and every future funding path go th
   (`HydratedDocument`). `platform-settings.service.ts`'s `getPlatformSettings` gained an
   optional `session?: ClientSession` parameter (backward-compatible) so the payout-multiplier
   snapshot can be read inside the placement transaction.
+
+### Window 4A4 - bet editing & reads: no schema or index change, two new error codes
+
+**No collection, field, validator, hook or index was added or changed.** `bets`,
+`betRevisions` and `walletTransactions` are used exactly as Window 1 defined them:
+
+- **`betRevisions {betId, toVersion}` unique** is the verified concurrency backstop for
+  editing. Two edits racing from the same `version` both target `toVersion = version + 1`; one
+  commits, the other's insert throws E11000 inside its aborted transaction and is surfaced as
+  `STALE_VERSION`. Exercised by `bet-edit.integration.ts`.
+- **`betRevisions {userId, editRequestId}` unique** is the `editRequestId` idempotency
+  backstop. A concurrent duplicate collides here; the replay is recovered outside the aborted
+  transaction (same target wager -> the already-applied bet, no second wallet movement;
+  different target wager -> `DUPLICATE_REQUEST`).
+- **`betRevisions {userId, editedAt}`** backs a future per-player revision history read; not
+  yet routed.
+- **`betRevisions.walletDeltaPaise`** is `before.totalStakePaise - after.totalStakePaise`
+  (schema `pre("validate")` enforced): negative when the edit debited the wallet, positive
+  when it refunded, zero for a same-total edit. Ledger edit deltas may be smaller than the
+  100-paise selection minimum (an existing DATABASE.md note).
+- **`bets {userId, clientRequestId}` / `bets.publicRef` / `bets.payoutMultiplierSnapshot`
+  (immutable)** are untouched by an edit - the same identity is preserved and only `version`,
+  `selections`, `entryMethod`, `entryMetadata`, `totalSelections`, `totalStakePaise` and
+  `lastEditedAt` change, via a native-driver compare-and-set `updateOne({ _id, userId,
+  version: expectedVersion, status: "ACTIVE" })` inside the transaction (the `(version,
+  status)` filter is the atomic optimistic lock). `bets {userId, createdAt}` serves the
+  newest-first `GET /api/bets` page directly; the opaque cursor carries `(createdAt, _id)`.
+- **`walletTransactions {idempotencyKey}` unique** - the `BET_EDIT_DEBIT` / `BET_EDIT_REFUND`
+  row carries the deterministic key `BET_EDIT_DEBIT:<betId>:v<toVersion>` /
+  `BET_EDIT_REFUND:<betId>:v<toVersion>`, so a replay never double-moves and the row is
+  reconstructable. `referenceType: "BET"` / `referenceId: <betId>` link it to the bet.
+- The `Bet` update and the `BetRevision` insert use the **native driver** inside the
+  transaction (`Bet.collection.updateOne` / `BetRevision.collection.insertOne`) for the same
+  reason Window 4A3 used a plain insert - a Mongoose document created in a
+  `connection.transaction()` session is reset on retry and resetting the `strict:"throw"`
+  `entryMetadata` sub-document throws `StrictModeError`. The ODM `validate()` still runs first
+  (on throwaway `new Bet(...)` / `new BetRevision(...)`) and the unique indexes still enforce
+  correctness.
+
+Type-only additions: `bet.model.ts` gained `BetRow` (lean-read shape = record + `_id` +
+`createdAt` + `updatedAt`); `bet-revision.model.ts` gained `BetRevisionRecord`
+(`InferSchemaType`), `BetRevisionDoc` (`HydratedDocument`) and `BetRevisionRow`. No field,
+validator, hook or index changed.
+
+`lib/errors/domain-error.ts` gained `BET_NOT_FOUND` (404 - a missing OR non-owned bet,
+deliberately indistinguishable) and `STALE_VERSION` (409 - the `expectedVersion`
+optimistic-concurrency conflict, matching API_CONTRACTS.md's "409 state/version/idempotency
+conflict"). `BET_ALREADY_SETTLED` (409), `EDIT_WINDOW_CLOSED` (422), `DUPLICATE_REQUEST` (409)
+and `INSUFFICIENT_BALANCE` (422) already existed and are reused verbatim; no synonymous codes
+were added.

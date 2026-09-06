@@ -653,3 +653,148 @@ PLAYER; ADMIN -> `403 FORBIDDEN`, anonymous -> `401 UNAUTHENTICATED`, disabled/s
 rejected by `findActiveSessionUser`) -> `placeBetRequestSchema.parse` (Zod failure ->
 `400 INVALID_INPUT`) -> `placeBet` -> `{ data: BetPlacementReceipt }`. No `userId` from the
 client — the bet owner is the authenticated session.
+
+## Window 4A4: bet editing, revisions, player bet reads
+
+Backend / financial domain only. Whole-wager editing of an ACTIVE bet before its round's edit
+cutoff, one immutable `betRevisions` row per edit, a wallet movement for the STAKE DIFFERENCE
+only, and the owner-only player bet **read** backend (`GET /api/bets`, `GET /api/bets/:id`).
+**No My Bets / ticket / edit UI, no PNG/PDF, no withdrawal workflow, no admin CRUD, no result
+declaration, no settlement, no payout credit, no visual redesign.** Window 2A's visual design
+remains pending a dedicated Codex visual-browser refinement pass; this window built no UI. The
+roadmap lists "My Bets" under Window 5 — only its read backend is built here (no UI); the
+Window 5 UI and the edit screen both consume it, and Window 4A3's handoff already earmarked
+`GET /api/bets` / `GET /api/bets/:id` as immediately next.
+
+### Module layout
+
+```text
+lib/errors/domain-error.ts                 # + BET_NOT_FOUND (404), STALE_VERSION (409)
+modules/betting/
+  models/
+    bet.model.ts                           # + BetRow lean-read type (no schema/index change)
+    bet-revision.model.ts                  # + BetRevisionRecord / BetRevisionDoc / BetRevisionRow types (no schema/index change)
+  validators/
+    bet-query.ts                           # betsListQuerySchema (.strict): limit 1-50 default 20, cursor, status?, market?
+    edit-bet-input.ts                      # editBetRequestSchema (Zod discriminated union on entryMethod, each branch .strict()),
+                                           #   toEditEntryInput - same method-input field names as quote/placement,
+                                           #   + expectedVersion + editRequestId, NO marketSlug
+  services/
+    bet-read.service.ts                    # listPlayerBets, getPlayerBetDetail, resolveOwnedBet, ownedBetFilter,
+                                           #   toPlayerBetDTO / toBetRevisionDTO / entryMetadataOf, bet cursor codec (server-only)
+    bet-edit.service.ts                    # editBet(input, options?) -> PlayerBetDetailDTO; betEditWalletKey;
+                                           #   compositionMatchesNormalized (server-only)
+src/app/api/bets/route.ts                  # + GET (ACTIVE PLAYER) alongside the existing POST
+src/app/api/bets/[id]/route.ts             # GET + PATCH (ACTIVE PLAYER; PATCH same-origin; force-dynamic)
+```
+
+`lib/dates/market-time.ts`, `modules/markets/*`, `modules/settings/*` and
+`modules/wallet/services/wallet.service.ts` are consumed unchanged - the edit reuses
+`normalizeBetEntry`, `getBettingWindow`, `roundStateOf`, `getPlatformSettings` and the
+`debitAvailableInSession` / `creditAvailableInSession` primitives verbatim. The wallet still
+never imports betting (`Bet -> Wallet`, `referenceType: "BET"` / `referenceId` the generic link).
+
+### Layering
+
+```text
+API (thin route)  ->  Zod (editBetRequestSchema / betsListQuerySchema)  ->  BetEditService.editBet / BetReadService.*
+      |
+shared normalization engine (normalizeBetEntry) . market/round models (Window 3A) .
+platform settings (minimum stake only) . wallet transaction primitives (BET_EDIT_DEBIT / BET_EDIT_REFUND)
+      |
+one Mongo transaction (withTransaction): wallet delta + ledger + CAS Bet update + betRevisions insert
+```
+
+### `editBet(input, options?)`
+
+`input = { userId, betRef, request }` where `betRef` is the bet's `id` handle (24-hex) or its
+`publicRef`. `options` is a test seam only - `{ clock?, afterWalletMovement? }`, production
+passes neither.
+
+1. **Read settings, normalize.** `getPlatformSettings()` for `minimumStakePaise` **only** - the
+   payout multiplier is never read here (rule 4). `normalizeBetEntry(toEditEntryInput(request),
+   request.stakePaise, minimumStakePaise)` - the shared pure engine, fail-fast
+   (`INVALID_SELECTION` / `STAKE_BELOW_MINIMUM` / `MONEY_OUT_OF_RANGE`) with no database round-trip.
+2. **Resolve the caller's own bet** - `resolveOwnedBet(userId, betRef)`; missing or non-owned is
+   `BET_NOT_FOUND` (404).
+3. **Idempotent-replay recovery FIRST** - `BetRevision.findOne({ userId, editRequestId })`. If a
+   revision exists for this id, its `after` snapshot equals the newly-normalized wager and its
+   `betId` matches, return `getPlayerBetDetail(...)` **without** re-checking the cutoff and
+   **without** a wallet movement - a replay after cutoff still returns the previous success. A
+   different target wager (or a different bet) is `DUPLICATE_REQUEST`.
+4. **Guards** - `status === "ACTIVE"` (`BET_ALREADY_SETTLED`), `version === expectedVersion`
+   (`STALE_VERSION`), then `getBettingWindow(market.enabled, roundStateOf(round), clock())
+   .canEditBet` for the bet's **own** round (a closed round is not editable) - a blocked reason
+   maps to its verbatim code (`EDIT_WINDOW_CLOSED` / `MARKET_CLOSED` / `MARKET_DISABLED` / ...).
+5. **Validate the post-edit composition** - build a throwaway `new Bet({...})` and a
+   `new BetRevision({...})` and `.validate()` both, so the schema `pre("validate")` invariants
+   (count = selections length, total = sum of stakes, metadata <-> method, `toVersion =
+   fromVersion + 1`, `walletDeltaPaise = before.total - after.total`) run before the native
+   writes that bypass hooks.
+6. **One `withTransaction`:**
+   - fresh `now = clock()`; re-read the bet + market + round **in the session**; re-check
+     `status` / `version === expectedVersion` / `getBettingWindow(...).canEditBet` against
+     `now` - the authoritative cutoff check at the transactional boundary (rule 10);
+   - `stakeDelta = after.totalStakePaise - before.totalStakePaise`. `> 0` ->
+     `debitAvailableInSession({ type: "BET_EDIT_DEBIT", amountPaise: stakeDelta, idempotencyKey:
+     BET_EDIT_DEBIT:<betId>:v<toVersion> })`; `< 0` -> `creditAvailableInSession({ type:
+     "BET_EDIT_REFUND", amountPaise: -stakeDelta, idempotencyKey: BET_EDIT_REFUND:<betId>:v<toVersion> })`;
+     `= 0` -> no movement. The difference only - never a full refund + re-debit (rule 6);
+   - `options.afterWalletMovement?.()` (test seam to force a post-movement rollback);
+   - **CAS** `Bet.collection.updateOne({ _id, userId, version: expectedVersion, status:
+     "ACTIVE" }, { $set: { ...composition..., version: toVersion, lastEditedAt: now, updatedAt: now } })`
+     - the `(version, status)` filter is the atomic optimistic lock; `matchedCount !== 1` =>
+     `STALE_VERSION`. Native driver, matching the placement service's reason (a Mongoose doc
+     created in a `connection.transaction()` session is reset on retry and resetting its
+     `strict:"throw"` `entryMetadata` sub-document throws);
+   - `BetRevision.collection.insertOne(revObj, { session })` - the unique `(betId, toVersion)`
+     and `(userId, editRequestId)` indexes are the real backstop.
+7. **After commit** return `getPlayerBetDetail(userId, betId, at)` - the DTO is rebuilt from
+   persisted state and includes the new `revisions[]`.
+8. **Duplicate-key recovery** outside the aborted transaction: a collision on `(userId,
+   editRequestId)` for the *same* target wager replays the winner; a `(betId, toVersion)`
+   collision from a different racing edit means that edit won -> `STALE_VERSION`; a same-id /
+   different-wager collision is `DUPLICATE_REQUEST`.
+
+### Player bet reads
+
+`listPlayerBets(userId, { limit, cursor, status?, market? }, now)` - `userId` from the session
+only. Newest first, stable `createdAt` desc then `_id` desc, opaque base64url cursor over the
+last row's `(createdAt, _id)` (identical scheme to `GET /api/wallet/transactions`), always
+bounded (`limit` clamped to `[1, 50]`, default 20). The page's markets and rounds are
+batch-loaded with two `$in` reads, never one query per bet. `getPlayerBetDetail(userId,
+idOrRef, now)` adds the full `revisions[]` (oldest first) for the ticket / edit screen.
+`ownedBetFilter` matches a 24-hex `idOrRef` as `_id` and anything else as an upper-cased
+`publicRef`, always AND-ed with `userId`.
+
+### DTOs
+
+`PlayerBetDTO` = `{ id, publicRef, market: {name, slug, code}, businessDate, entryMethod,
+entryMetadata, selections: [{number, stakePaise}], totalSelections, totalStakePaise,
+payoutMultiplierSnapshot, status, version, placedAt, lastEditedAt, editCutoffAt, closesAt,
+canEditNow, result, winningNumber, payoutPaise, settledAt }`. `PlayerBetDetailDTO` adds
+`revisions: BetRevisionDTO[]`. `BetRevisionDTO` = `{ fromVersion, toVersion, before, after,
+walletDeltaPaise, editedAt }` where `before` / `after` = `{ entryMethod, entryMetadata,
+selections, totalStakePaise }`. Never serialized: `userId`, `marketId`, `marketRoundId`,
+`clientRequestId`, `betId`, `editRequestId`, the ledger idempotency key, any Mongo `_id` on a
+sub-document. `winningNumber` / `payoutPaise` / `settledAt` are `null` (no settlement engine
+yet) - never fabricated.
+
+### Errors
+
+Added stable codes `BET_NOT_FOUND` (404) and `STALE_VERSION` (409) to
+`lib/errors/domain-error.ts`. `EDIT_WINDOW_CLOSED` (422), `MARKET_CLOSED` / `MARKET_DISABLED` /
+`MARKET_NOT_OPEN` / `ROUND_NOT_FOUND` (422/404), `BET_ALREADY_SETTLED` (409),
+`INSUFFICIENT_BALANCE` (422), `DUPLICATE_REQUEST` (409), `INVALID_SELECTION` /
+`STAKE_BELOW_MINIMUM` / `MONEY_OUT_OF_RANGE` (422), `INVALID_INPUT` (400) already existed and
+are reused verbatim - no synonymous codes.
+
+### Routes
+
+`GET /api/bets` - `requirePlayer()` -> `betsListQuerySchema.parse` -> `listPlayerBets` ->
+`{ data: { bets, nextCursor, serverNow } }`. `GET /api/bets/[id]` - `requirePlayer()` ->
+`getPlayerBetDetail` -> `{ data: { bet, serverNow } }`. `PATCH /api/bets/[id]` - `isTrustedOrigin`
+(same-origin, `403` on mismatch) -> `requirePlayer()` -> `editBetRequestSchema.parse` -> `editBet`
+-> `{ data: { bet, serverNow } }`. All `export const dynamic = "force-dynamic"`; an ADMIN
+session is `403 FORBIDDEN`, anonymous `401 UNAUTHENTICATED`; no `userId` is accepted from the
+client on any of them.

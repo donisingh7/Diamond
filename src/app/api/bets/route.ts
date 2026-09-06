@@ -6,9 +6,30 @@ import { requirePlayer } from "@/lib/auth/session";
 import { DomainError } from "@/lib/errors/domain-error";
 import { placeBetRequestSchema } from "@/modules/betting/validators/place-bet-input";
 import { placeBet } from "@/modules/betting/services/bet-placement.service";
+import { betsListQuerySchema } from "@/modules/betting/validators/bet-query";
+import { listPlayerBets } from "@/modules/betting/services/bet-read.service";
 
 // Reads the session cookie and the database on every call; nothing here is cacheable.
 export const dynamic = "force-dynamic";
+
+/**
+ * GET /api/bets — the player's own bets ("My Bets"), newest first, bounded (`?limit=` 1–50
+ * default 20, `?cursor=` opaque). Optional `?status=ACTIVE|WON|LOST` and `?market=<slug>`
+ * filters. ACTIVE PLAYER only; an ADMIN session is `403`. Identity is the authenticated
+ * session — a client `userId` is never accepted. `.strict()` query (`400 INVALID_INPUT` on a
+ * stray param or malformed cursor).
+ */
+export const GET = apiRoute(async (request: NextRequest) => {
+  const user = await requirePlayer();
+  const query = betsListQuerySchema.parse(Object.fromEntries(request.nextUrl.searchParams));
+  const now = new Date();
+  const page = await listPlayerBets(
+    user._id,
+    { limit: query.limit, cursor: query.cursor, status: query.status, market: query.market },
+    now,
+  );
+  return NextResponse.json({ data: { ...page, serverNow: now.toISOString() } });
+});
 
 /**
  * POST /api/bets — confirm a real bet. ACTIVE PLAYER only (an ADMIN session is `403 FORBIDDEN`,
