@@ -6,12 +6,13 @@ import { LoaderCircle } from "lucide-react";
 import { springInteractive } from "@/lib/ui/motion";
 import { cx } from "@/lib/utils/classes";
 
-export type ButtonProps = HTMLMotionProps<"button"> & {
+export type ButtonProps = Omit<HTMLMotionProps<"button">, "children"> & {
   variant?: "primary" | "secondary" | "ghost" | "danger";
   size?: "sm" | "md" | "lg";
   loading?: boolean;
   leadingIcon?: ReactNode;
   trailingIcon?: ReactNode;
+  children?: ReactNode;
 };
 export function Button({ variant = "primary", size = "md", loading = false, disabled, leadingIcon, trailingIcon, children, className, ...props }: ButtonProps) {
   const reduced = useReducedMotion();
