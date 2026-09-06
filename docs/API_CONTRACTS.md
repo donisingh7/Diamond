@@ -132,3 +132,29 @@ Three read-only routes (`src/app/api/markets/route.ts`, `src/app/api/markets/[sl
 `ResultEntry` = `{marketId, name, slug, code, displayOrder, businessDate, state, result:"NN"|null, resultDeclaredAt: iso|null, settlementStatus, opensAt: iso|null, closesAt: iso|null}`. No `declaredByAdminId` or other admin identifiers are exposed.
 
 `range=today` returns one entry per market — its current operational round (see ARCHITECTURE.md's resolution table: a cross-midnight market between 00:00 and 03:00 IST still reports the previous business date; 03:00–07:00 reports the upcoming round with `result: null`). `range=7d`/`30d` return only persisted **result-bearing** rounds inside an inclusive `Asia/Kolkata` calendar window ending on the current business day (7d = today + 6 prior days; 30d = today + 29), capped at today; ordered newest business date first, then `displayOrder`. Neither range ever creates rounds. `INVALID_RESULT_RANGE` (400) is a defined code for a range value that somehow reaches the service unrecognised; the Zod enum normally rejects it first as `INVALID_INPUT`.
+
+## Window 4A1 — implemented bet quote contract
+
+`POST /api/bets/quote` is now a real route handler (`src/app/api/bets/quote/route.ts`), `apiRoute`-wrapped with the shared `{data:...}` / `{error:{code,message}}` shape, requiring an **ACTIVE PLAYER** session via `requirePlayer()` (an anonymous request is `401 UNAUTHENTICATED`; an authenticated **ADMIN** is `403 FORBIDDEN` — PLAYER-only, not widened). As a state-changing `POST` it is subject to the same-origin check (`403` on a mismatched `Origin`), matching the auth mutation routes. `export const dynamic = "force-dynamic"`.
+
+The quote is **informational and non-binding**: it performs **no wallet balance check**, reserves nothing, and writes **no bet / wallet / ledger document**. It may create the day's operational `MarketRound` (existing Window 3A behaviour). Actual placement (`POST /api/bets`, a later window) recomputes everything server-side and must not trust a stale quote.
+
+Two deliberate, documented refinements of the "Proposed DTO conventions" sketch above (which predates the engines):
+
+- The request carries **`stakePaise`** (integer paise) rather than `stakeRupees` decimal text — Window 4A1's brief specifies integer paise end to end, and the engine contract already takes `stakePaise: number`. The domain minimum (`platformSettings.minimumStakePaise`) is enforced by the engine, so a below-minimum stake is `STAKE_BELOW_MINIMUM` (422), not a generic 400.
+- The request identifies the market by **`marketSlug`** (not `marketRoundId`) — consistent with Window 3A's slug-addressed market routes and CODEX_RULES' "never expose a Mongo ObjectId to the client" rule. The response **returns** `marketRoundId` for a later placement call to reference.
+
+| Route | Request body (discriminated on `entryMethod`, each branch `.strict()`) | `200` `data` | Notable errors |
+| --- | --- | --- | --- |
+| `POST /api/bets/quote` | `{marketSlug, entryMethod:"JODI", numbers: string[]  (1–100, each `/^\d{2}$/`), stakePaise: int>0}` · `{marketSlug, entryMethod:"CROSSING", digits: /^\d+$/ (≤100), stakePaise}` · `{marketSlug, entryMethod:"COPY_PASTE", rawInput: string (1–2000), palti: boolean, stakePaise}` | `BetQuote` | `401`, `403`, `INVALID_INPUT` (400 — malformed shape or an irrelevant cross-method field), `INVALID_SELECTION` (422 — malformed numbers/digits/paste/palti input), `STAKE_BELOW_MINIMUM` (422), `MONEY_OUT_OF_RANGE` (422 — arithmetic beyond safe-integer precision), `MARKET_NOT_FOUND` (404), `MARKET_DISABLED` / `MARKET_NOT_OPEN` / `MARKET_CLOSED` (422) |
+
+`BetQuote` = `{marketSlug, marketId, marketRoundId, businessDate:"YYYY-MM-DD", marketState, entryMethod, entryMetadata, engineMetadata, selections:[{number:"NN", stakePaise}], selectionCount, stakePerSelectionPaise, totalStakePaise, currency, payoutMultiplier, perWinningSelectionCreditPaise, editCutoffAt: iso, editableAfterPlacing: boolean, binding: false, serverNow: iso}`.
+
+- `entryMetadata` mirrors the persisted `bets.entryMetadata` shape: `{numbers}` (JODI, the raw submitted list) · `{digits}` (CROSSING) · `{rawInput, palti}` (COPY_PASTE). It is source metadata for reconstruction — **not** authoritative over `selections`.
+- `engineMetadata` is non-persisted UI convenience: `{uniqueDigits, uniqueDigitCount}` for CROSSING, `{parsedNumbers}` for COPY_PASTE, `{}` otherwise.
+- `selections` is the canonical de-duplicated wager, deterministically ordered (Crossing: first-appearance Cartesian; Copy Paste / Palti: first-occurrence). The same common `stakePaise` is applied to every selection.
+- `perWinningSelectionCreditPaise = stakePerSelectionPaise × payoutMultiplier` — the complete credit for a winning selection; the stake is not added back. `payoutMultiplier` is read live from `platformSettings`, so changing it there changes the quote with no code change.
+- `editableAfterPlacing` is `false` during the `CLOSING_SOON` / edit-locked interval, where new bets are still allowed (so the quote still succeeds).
+- `binding: false` is a literal constant marking the quote advisory.
+
+No `clientRequestId` / idempotency key — that belongs to placement. Repeated identical quote requests return equivalent results for the same server state and settings.

@@ -379,3 +379,59 @@ No `resultHistory`/`wins` collection — everything derives from `marketRounds`.
 ### Errors
 
 Added stable codes `MARKET_NOT_FOUND` (404), `MARKET_NOT_OPEN` (422), `ROUND_NOT_FOUND` (404), `INVALID_RESULT_RANGE` (400) to `lib/errors/domain-error.ts`. `MARKET_DISABLED`/`MARKET_CLOSED`/`EDIT_WINDOW_CLOSED` already existed and are reused verbatim — no synonymous codes.
+
+## Window 4A1: bet normalization engines and read-only quote
+
+Backend / domain only. Jodi, Crossing, Copy Paste and Palti engines; canonical selection normalization; stake and payout calculation; and a server-authoritative `POST /api/bets/quote`. **No bet placement, no wallet read or debit, no ledger, no bet document write, no bet editing, no ticket, no betting UI.** Window 2A's visual design remains pending a dedicated Codex visual refinement pass; this window built no UI.
+
+### Module layout
+
+```text
+modules/betting/
+  engines/                       # PURE — no db, wallet, clock, persistence, React
+    selection.ts                 # canonical two-char helpers: TWO_DIGIT, assertTwoDigit,
+                                 #   reverseTwoDigit, dedupePreservingOrder
+    jodi.engine.ts               # normalizeJodi(numbers) -> string[]
+    crossing.engine.ts           # generateCrossing(digits) -> { uniqueDigits, uniqueDigitCount, numbers }
+    copy-paste.engine.ts         # parseCopyPaste(rawInput) -> string[] (ordered, dupes kept)
+    palti.engine.ts              # expandPalti(numbers) -> string[]
+    normalize.ts                 # normalizeBetEntry(input, stakePaise, minimumStakePaise) -> NormalizedBetEntry
+    types.ts                     # NormalizedBetEntry, BetEntryMetadata, BetEngineMetadata, EntryMethod
+    contracts.ts                 # NormalizeBet (return widened to NormalizedBetEntry), ApplyPalti
+  validators/quote-input.ts      # Zod discriminated union quoteRequestSchema + toEntryInput()
+  services/quote.service.ts      # quoteBet(request, now) -> BetQuote  (server-only)
+modules/settings/services/platform-settings.service.ts   # getPlatformSettings() read-only (server-only)
+src/app/api/bets/quote/route.ts  # POST (ACTIVE PLAYER), same-origin, thin
+```
+
+### Pure engines
+
+The engines carry no `server-only` marker on purpose — they are environment-agnostic and reusable by the quote service, future placement, future bet editing, tests and ticket reconstruction. They never query MongoDB, inspect the wallet or the clock, call React, generate a public reference or create a bet. Parsing lives here, never in a route handler, so quote and later placement/edit cannot drift to different parsers.
+
+- **Deterministic ordering.** Crossing preserves the first-appearance order of deduplicated input digits and never re-sorts the generated pairs. Copy Paste and Palti preserve first-occurrence order. Documented as a contract in DOMAIN_RULES.md so a later builder UI can rely on it.
+- **Duplicate rule.** All three methods collapse duplicates (first occurrence kept). Documented; not a rejection.
+- **Canonical vs source.** `NormalizedBetEntry.selections` is the authoritative wager. `entryMetadata` mirrors the strict `bets.entryMetadata` sub-document (`{numbers}` | `{digits}` | `{rawInput, palti}`) for audit / ticket / revision reconstruction only. `engineMetadata` (`uniqueDigits`, `uniqueDigitCount`, `parsedNumbers`) is non-persisted UI convenience so a screen can say "Using unique digits 4, 2, 8" without re-running business logic. Settlement will only ever read `selections` — it never needs to re-run Crossing or Palti.
+- **Money.** Integer paise throughout. `normalizeBetEntry` reuses `lib/money`'s `safeMultiply` for `totalStakePaise` and rejects any non-safe-integer or overflowing arithmetic (`MONEY_OUT_OF_RANGE`). The per-selection minimum is passed in from settings (`STAKE_BELOW_MINIMUM` below it) — no literal `100` in the engine.
+
+### Quote service
+
+`quoteBet(request, now)`:
+
+1. `getPlatformSettings()` — `payoutMultiplier` and `minimumStakePaise` come from the persisted singleton, never a literal.
+2. `normalizeBetEntry(...)` — pure; fails fast on bad input with no market round-trip.
+3. `getMarketWithCurrentRound(slug, now)` (Window 3A) — resolves the server-authoritative current round and may create the day's operational `MarketRound`. This is the **only** write a quote performs; no bet / wallet / ledger document is ever written. `MARKET_NOT_FOUND` for an unknown slug.
+4. Gate on `getBettingWindow(...).canPlaceBet` (Window 3A helper, reused — no re-derived boundary maths). New bets are allowed on `[opensAt, closesAt)`; at exactly `closesAt` the quote fails `MARKET_CLOSED`; during the edit-locked `CLOSING_SOON` interval it still succeeds and the response carries `editableAfterPlacing: false`. Blocked states map to the `getBettingWindow` reason verbatim (`MARKET_DISABLED` / `ROUND_NOT_FOUND` / `MARKET_NOT_OPEN` / `MARKET_CLOSED`).
+
+The quote never touches the wallet — balance is a later window and placement validates funds atomically. `perWinningSelectionCreditPaise = stakePerSelectionPaise × payoutMultiplier`. The response includes `marketRoundId` so later placement can name the intended round, and `binding: false` to make its advisory nature explicit; placement must still revalidate server-side.
+
+### Errors
+
+No new codes. `INVALID_SELECTION` (422) covers every malformed entry (Jodi value, Crossing digits, Copy Paste token, Palti input); `STAKE_BELOW_MINIMUM` (422) / `MONEY_OUT_OF_RANGE` (422) cover stake; `MARKET_NOT_FOUND` / `MARKET_DISABLED` / `MARKET_NOT_OPEN` / `MARKET_CLOSED` / `ROUND_NOT_FOUND` are reused from Window 3A. Zod failures on the route are `400 INVALID_INPUT` via `apiRoute`. Raw Mongo/Zod detail never crosses the HTTP boundary.
+
+### Route
+
+`POST /api/bets/quote` — `export const dynamic = "force-dynamic"`; `isTrustedOrigin` (same-origin CSRF guard, matching the auth mutation routes) → `requirePlayer()` (ACTIVE PLAYER; an ADMIN session is `403 FORBIDDEN`, an anonymous one `401 UNAUTHENTICATED` — the PLAYER-only boundary is not widened) → `quoteRequestSchema.parse` → `quoteBet` → `{ data: BetQuote }`. No `clientRequestId` / idempotency key (that belongs to placement); repeated identical quotes simply return equivalent results for the same server state.
+
+### Idempotency / reusability
+
+`normalizeBetEntry` is the single normalization entry point the future bet-place and bet-edit services must reuse, so quote and placement can never diverge. The `NormalizeBet` contract return type was widened from `readonly NormalizedSelection[]` to the full `NormalizedBetEntry` for this reason.

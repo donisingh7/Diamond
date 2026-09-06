@@ -516,3 +516,7 @@ No new collections. Markets and rounds still derive every view (today, 7-day, 30
 `marketRounds` preserved: `{ marketId: 1, businessDate: 1 }` unique (current-round lookup, per-market history, concurrency backstop) and `{ closesAt: 1 }`. **Added:** `{ businessDate: 1, marketId: 1 }` — the cross-market results-history query is a `businessDate` range across all markets sorted newest-first, which the `marketId`-leading unique index cannot serve. `result` presence is a residual `$exists` filter, not indexed (≤ 6 rows per business date). No other fields were indexed.
 
 `ensureMarketRound` relies on the unique `(marketId, businessDate)` index as its race backstop: a lost create race throws E11000 and the winner is re-read rather than a duplicate inserted.
+
+### Window 4A1 — no schema change
+
+No new collections, models or indexes. The betting engines are pure and touch no database. `POST /api/bets/quote` writes **no** `bets` / `betRevisions` / `wallets` / `walletTransactions` document — it only reads `platformSettings` and `markets`, and may create the day's operational `marketRounds` row exactly as the Window 3A market/results reads already do. `platformSettings` gained a read-only accessor (`getPlatformSettings`) only; no mutation path and the seed default rate (90) is unchanged. The `bets.entryMetadata` sub-document shape (`{numbers}` | `{digits}` | `{rawInput, palti}`) and the `selections` array shape are unchanged — the engines produce exactly that shape for a future placement window to persist.

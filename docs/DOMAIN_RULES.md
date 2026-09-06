@@ -412,6 +412,18 @@ payoutMultiplierSnapshot = 90
 
 Existing bets keep their stored payout multiplier even if admin later changes the current rate.
 
+### Window 4A1 implementation clarification (no business rule changed)
+
+The frozen rules above (JODI / CROSSING / COPY PASTE / Palti / stake / 90x payout) are implemented as pure engines plus a read-only quote. Nothing was altered.
+
+- **Canonical selection.** Every entry method normalizes to `{ number: "00"–"99" (two-character string), stakePaise: integer }`. Numbers are never stored as integers; leading zeros survive every transformation. Engine output is deterministic and de-duplicated.
+- **Duplicate handling.** Duplicates arriving through input (a JODI list, a Copy Paste sequence, repeated Crossing digits) **collapse** to a single canonical selection — first occurrence kept, order preserved — rather than being charged twice. No frozen document requires rejection and the API Zod layer does not enforce uniqueness, so the engine is the safe normalization point.
+- **Crossing ordering.** Deduplicate source digits in first-appearance order, then emit the full ordered Cartesian product (outer loop = first digit, inner loop = second digit, same order), self-pairs included. For `428`: `44 42 48 24 22 28 84 82 88`. `n` unique digits → exactly `n²` selections; inherently ≤ 100 (at most 10 distinct digits).
+- **Copy Paste parsing.** Accepts one contiguous even-length digit run, or numbers separated by spaces / commas / dots (mixed runs of those tolerated). No other punctuation is a separator. Fail-closed: any token that is not exactly two digits rejects the whole input — no digit is invented, dropped or truncated.
+- **Palti.** An option inside Copy Paste, not a separate bet type — the canonical method stays `COPY_PASTE` with metadata `palti: true`. Process originals in input order; emit the original, then its reverse if not already emitted; de-duplicate globally; self-palindromes appear once. `22 15 48 96 35` with Palti → `22 15 51 48 84 96 69 35 53`.
+- **Stake and payout are configuration-driven.** The minimum stake is `platformSettings.minimumStakePaise` (100) and the multiplier is `platformSettings.payoutMultiplier` (90), both read from the persisted singleton — never a literal. `perWinningSelectionCreditPaise = stakePaise × payoutMultiplier` in integer paise; the stake is not added back. A later window snapshots the multiplier onto each created bet; Window 4A1 persists nothing.
+- **Quote is non-binding.** `POST /api/bets/quote` validates and calculates only. It never reads or reserves wallet funds and never writes a bet / wallet / ledger document. It may create the day's operational `MarketRound` (existing Window 3A behaviour). Actual placement (a later window) revalidates market, settings and funds server-side and must not trust a stale client quote.
+
 ## BET EDITING
 
 A player may edit the ENTIRE bet until:
