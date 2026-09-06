@@ -1,4 +1,4 @@
-import { Schema } from "mongoose";
+import { Schema, type InferSchemaType, type HydratedDocument } from "mongoose";
 import { modelFor, schemaOptions, userRef, requiredText, nonnegativeInteger, twoDigit } from "@/lib/db/schema";
 import { safeAdd } from "@/lib/money";
 import { compositionFields, payoutField } from "./composition.schema";
@@ -32,4 +32,7 @@ betSchema.index({ userId: 1, createdAt: -1 });
 betSchema.index({ marketRoundId: 1, status: 1 });
 betSchema.index({ marketId: 1, createdAt: -1 });
 betSchema.index({ userId: 1, clientRequestId: 1 }, { unique: true });
+/** Type-only exports (no schema/index change). `version` is the domain version, distinct from Mongoose `__v`. */
+export type BetRecord = InferSchemaType<typeof betSchema>;
+export type BetDoc = HydratedDocument<BetRecord>;
 export const Bet = modelFor("Bet", betSchema, "bets");

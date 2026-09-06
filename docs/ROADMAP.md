@@ -305,3 +305,116 @@ script were stopped and removed afterward.
 No live `npm run db:check` / `npm run db:seed` against the user's configured database was run
 in this window; all database verification used disposable replica sets. Window 2A visual
 quality remains pending Codex visual-browser refinement.
+
+## Window 4A3 handoff status
+
+Window 4A3 (real player bet placement — canonical wager recompute + market revalidation +
+payout-multiplier snapshot + `Bet` persistence + atomic wallet debit + immutable `BET_PLACED`
+ledger + client-request idempotency + human public reference + `POST /api/bets`) is complete.
+**Backend / financial domain only.** See ARCHITECTURE.md's "Window 4A3" section for the design,
+DOMAIN_RULES.md's "Window 4A3 implementation clarification" for the frozen-rule mapping,
+API_CONTRACTS.md's "Window 4A3 — implemented bet placement contract" for exact shapes, and
+DATABASE.md's "Window 4A3 — bet placement: no schema or index change".
+
+Implemented:
+
+- `modules/betting/services/bet-placement.service.ts` — `placeBet(input, options?)`. Recomputes
+  `selections` / `entryMetadata` / totals through the shared `normalizeBetEntry` engine (never
+  a quote); existing-success idempotency recovery **before** the market-close re-check;
+  `resolveCurrentRound` + `getBettingWindow` gate, re-checked inside the transaction against a
+  fresh injectable clock; one `withTransaction` doing the payout-multiplier snapshot read →
+  `debitAvailableInSession("BET_PLACED", key BET_PLACED:<betId>)` → free-`publicRef` pick →
+  native-driver `Bet` insert; lost `(userId, clientRequestId)` race recovered outside the
+  aborted transaction. `betMatchesRequest` canonical-wager comparison. `BetPlacementReceipt` DTO.
+- `modules/betting/services/public-ref.ts` — `generatePublicRef` (`<CODE>-<MMDD>-<5 random>`
+  over a 31-symbol Crockford-style alphabet, `crypto.randomInt`), `businessDateRefComponent`,
+  `PUBLIC_REF_MAX_ATTEMPTS`.
+- `modules/betting/validators/place-bet-input.ts` — `placeBetRequestSchema` (Zod discriminated
+  union on `entryMethod`, every branch `.strict()`, `clientRequestId: z.uuid()`),
+  `toPlaceEntryInput`. Same field names as `quoteRequestSchema`.
+- `src/app/api/bets/route.ts` — `POST` (ACTIVE PLAYER, same-origin, thin, `force-dynamic`).
+- `modules/betting/models/bet.model.ts` — `BetRecord` / `BetDoc` type-only exports (no schema
+  or index change). `modules/settings/services/platform-settings.service.ts` —
+  `getPlatformSettings(session?)` optional `ClientSession` (backward-compatible).
+
+Deliberately **not** done (out of window): `PATCH /api/bets/:id` and any bet editing,
+`BetRevision.create` and `BET_EDIT_DEBIT` / `BET_EDIT_REFUND` movements, My Bets / bet-slip /
+premium-ticket UI, PNG/PDF or any stored ticket file, `GET /api/bets` / `GET /api/bets/:id`,
+wallet UI, withdrawal workflow, admin CRUD, result declaration, settlement / `WIN_CREDIT` /
+payout credit, any Window 2A visual redesign. `betRevisions`, `withdrawals` and settlement
+collections are untouched. No new error codes, collections or indexes were added.
+
+**Window 2A's visual design (colors, glass strength, ticket appearance) remains pending a
+dedicated Codex visual-browser refinement pass. This window built no UI and attempted no
+Window 2A visual redesign.** A future agent must not read this window's completion as visual
+sign-off. Remaining Window 4 scope (bet slip UI, premium ticket, bet editing + `betRevisions`,
+My Bets) is **not** started.
+
+## Verification record — 2026-09-06 (Window 4A3)
+
+| Check | Result |
+| --- | --- |
+| `npm run typecheck` | PASS; strict TypeScript incl. new service/validator/route/tests |
+| `npm run lint` | PASS; no warnings |
+| `npm test` | PASS; 173 tests across 14 files (163 prior + 10 new in `bet-placement.test.ts`) |
+| `npm run test:integration` | PASS; 117 tests across 6 files (92 prior + 25 new in `bet-placement.integration.ts`) against a disposable MongoDB 8.2.6 replica set |
+| `npm run build` | PASS; `/api/bets` registered as a dynamic route handler |
+| `git diff --check` | PASS; no whitespace errors |
+| Manual HTTP/E2E verification | PASS — see below |
+
+New unit coverage (`bet-placement.test.ts`): `generatePublicRef` format
+`^FB-0906-[A-Z2-9 minus IO]{5}$`, market code upper-cased, ambiguous glyphs `I O 0 1` absent
+from 500 suffixes, `businessDateRefComponent` MMDD extraction, ~zero duplicates across 5000
+generations; `betMatchesRequest` — identical wager matches, `"22 15 48"` vs `"22,15,48"`
+COPY_PASTE normalize-equal, different stake / market / selection count / Palti expansion do not
+match; `placeBetRequestSchema` — accepts each method with a UUID `clientRequestId`, rejects a
+missing / non-UUID id and every client-supplied authoritative or cross-method field
+(`totalStakePaise`, `selectionCount`, `selections`, `payoutMultiplier`, `marketRoundId`,
+`publicRef`, `digits` on JODI).
+
+New integration coverage (`bet-placement.integration.ts`, fixed injected clock): **success** —
+JODI `["07","22","48"]` @₹10 → ACTIVE v1 bet, `FB-0906-*` publicRef, exact ordered selections,
+`totalSelections 3` / `totalStakePaise 3000` / `payoutMultiplierSnapshot 90`,
+`marketRoundId` = the resolved round, `placedAt`/`serverNow` = the injected clock, receipt
+carries no `clientRequestId` / `marketId` / `marketRoundId` / `userId`; CROSSING `4428` → 9
+canonical selections, debit = 9 × stake; COPY_PASTE `2215489635` palti → exact 9-number
+shared-engine sequence; leading-zero `["00","07"]` persisted and returned as strings.
+**wallet** — exact debit, one `BET_PLACED` ledger row with `referenceType:"BET"`,
+`referenceId = bet._id`, `idempotencyKey = BET_PLACED:<betId>`; reserved balance untouched
+(success and rejection). **multiplier snapshot** — rate 90 → snapshot 90; rate set 95 → next
+bet snapshot 95; rate set 80 → both persisted bets keep 90 / 95. **idempotency** — same
+request retried → same `bet.id` + `publicRef`, no second debit / ledger row; `"22 15 48"` then
+`"22,15,48"` under one `clientRequestId` → same bet; same id + different numbers →
+`DUPLICATE_REQUEST`, no second bet or debit; two concurrent identical requests → one bet / one
+debit / one ledger row, both callers get the same id; replay after close → original bet
+returned (`canEditNow:false`), a *new* id after close → `MARKET_CLOSED`. **concurrency** — two
+different ₹80 bets against ₹100, different ids → one success / one `INSUFFICIENT_BALANCE` /
+final available ₹20 / one bet / one ledger. **boundaries** — before open → `MARKET_NOT_OPEN`;
+exactly at open → allowed; `CLOSING_SOON` → placed, `canEditNow:false`, still v1 ACTIVE;
+exactly at close → `MARKET_CLOSED`; disabled market → `MARKET_DISABLED`; a close that lands
+between the pre-check and the transaction (advancing clock) → `MARKET_CLOSED` at the
+transactional boundary — every rejection leaves zero `bets` / `BET_PLACED` rows and the wallet
+unchanged. **atomicity** — insufficient available balance → `INSUFFICIENT_BALANCE`, no partial
+write; reserved funds cannot cover a bet; a forced public-reference-generator throw *after* the
+wallet debit → whole transaction rolls back (balance restored, no ledger row, no bet); a rare
+`publicRef` collision recovered by bounded retry (2 collisions then a fresh ref → placed with a
+different ref, 2 bets); a persistent collision fails with no partial write. **scope guard** —
+after two placements, `betRevisions` / `withdrawals` count 0, no `WIN_CREDIT` /
+`BET_EDIT_*` rows, no round left non-`PENDING`.
+
+Manual HTTP verification used a **disposable** `mongodb-memory-server-core` replica set (seeded
+with the six markets, one ACTIVE player, one ACTIVE admin) plus a real `next dev` — the user's
+configured `.env`/database was never touched; the temporary driver script lived under
+`scratchpad/` and was deleted afterward. Exercised and observed: unauthenticated
+`POST /api/bets` → `401`; player password login → `200` + `diamond_session` cookie; a
+`mock-deposit` to fund the wallet; `POST /api/bets` JODI → `200` with a `FB-*` publicRef, wallet
+`availableBalancePaise` reduced by the stake, `GET /api/wallet/transactions` containing exactly
+one `BET_PLACED` row; the same `clientRequestId` replayed → `200`, identical `publicRef`, no
+second debit; the same `clientRequestId` with different numbers → `409 DUPLICATE_REQUEST`;
+CROSSING and COPY_PASTE + Palti placements → `200`; a mismatched `Origin` → `403`; an ADMIN
+session → `403`; and `betRevisions` / `withdrawals` empty at the end. The dev server, the
+disposable database and the temporary script were stopped and removed afterward.
+
+No live `npm run db:check` / `npm run db:seed` against the user's configured database was run
+in this window; all database verification used disposable replica sets. Window 2A visual
+quality remains pending Codex visual-browser refinement.

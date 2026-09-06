@@ -542,3 +542,114 @@ transaction, but knows nothing about bets (the dependency is Bet → Wallet, nev
 `BET_EDIT_REFUND`; settlement uses `WIN_CREDIT`; withdrawals use reserve/release/finalize;
 admin uses `ADMIN_CREDIT` / `ADMIN_DEBIT` — all already implemented and tested as primitives,
 with none of their higher-level workflows built.
+
+## Window 4A3: bet placement service, atomic Bet + Wallet + Ledger, public reference, idempotency
+
+Backend / financial domain only. The server-authoritative confirmation of a real player wager.
+**No bet editing, no `BetRevision`, no My Bets / ticket UI, no PNG/PDF, no wallet UI, no
+withdrawal workflow, no admin CRUD, no result declaration, no settlement, no payout credit, no
+visual redesign.** Window 2A's visual design remains pending a dedicated Codex visual-browser
+refinement pass; this window built no UI.
+
+### Module layout
+
+```text
+modules/betting/
+  models/bet.model.ts                     # + BetRecord / BetDoc type exports (no schema/index change)
+  validators/place-bet-input.ts           # placeBetRequestSchema (Zod discriminated union, each branch .strict()),
+                                          #   PlaceBetRequest, toPlaceEntryInput — quote body + clientRequestId, same field names
+  services/
+    public-ref.ts                          # generatePublicRef(marketCode, businessDate), PUBLIC_REF_ALPHABET,
+                                          #   businessDateRefComponent, PUBLIC_REF_MAX_ATTEMPTS (server-only)
+    bet-placement.service.ts               # placeBet(input, options?) -> BetPlacementReceipt; betMatchesRequest (server-only)
+modules/settings/services/platform-settings.service.ts   # getPlatformSettings(session?) — optional ClientSession, backward-compatible
+src/app/api/bets/route.ts                  # POST (ACTIVE PLAYER, same-origin, thin, force-dynamic)
+```
+
+`src/lib/errors/domain-error.ts` is unchanged — `MARKET_NOT_OPEN` / `MARKET_CLOSED` /
+`MARKET_DISABLED` / `ROUND_NOT_FOUND` / `MARKET_NOT_FOUND` / `INSUFFICIENT_BALANCE` /
+`DUPLICATE_REQUEST` / `STAKE_BELOW_MINIMUM` / `INVALID_SELECTION` / `MONEY_OUT_OF_RANGE` already
+exist and are reused verbatim; no synonymous codes were added.
+
+### Layering
+
+```text
+API (thin route)  ->  Zod (placeBetRequestSchema)  ->  BetPlacementService.placeBet
+      |
+shared normalization engine (normalizeBetEntry) . market/round service (Window 3A) .
+platform settings . wallet transaction primitive (debitAvailableInSession)
+      |
+one Mongo transaction (withTransaction)
+```
+
+The wallet never imports betting; betting depends on the wallet (`Bet -> Wallet`, never the
+reverse — `referenceType: "BET"` / `referenceId` carry the generic link). No circular imports.
+
+### `placeBet(input, options?)`
+
+`input = { userId, request }`. `options` is a test seam only — `{ clock?, generatePublicRef? }`,
+production passes neither. `clock` is the injectable authoritative time source and
+`generatePublicRef` lets a test force a persistence failure or a collision.
+
+1. **Read settings, normalize.** `getPlatformSettings()` for `minimumStakePaise`;
+   `normalizeBetEntry(toPlaceEntryInput(request), request.stakePaise, minimumStakePaise)` — the
+   shared pure engine, fail-fast on bad input (`INVALID_SELECTION` / `STAKE_BELOW_MINIMUM` /
+   `MONEY_OUT_OF_RANGE`) with no database round-trip. `getMarketBySlug` (`MARKET_NOT_FOUND`).
+2. **Existing-success idempotency recovery FIRST.** `Bet.findOne({ userId, clientRequestId })`.
+   If found: `betMatchesRequest` compares the canonical logical wager (market id, entry method,
+   ordered canonical selections, per-selection stake, totals — which also captures Palti, since
+   it changes the selection set; cosmetic raw-input differences that normalize identically are
+   equal). Equivalent -> build the receipt from the persisted bet and return **without**
+   re-checking the close time and **without** a second debit. Different -> `DUPLICATE_REQUEST`.
+3. **Resolve the current round** via `resolveCurrentRound(market, clock())` (Window 3A — may
+   create the day's operational `MarketRound`, the only pre-transaction write) and gate on
+   `getBettingWindow(...).canPlaceBet`; a blocked reason maps to its verbatim error code.
+4. **`createPlayerWallet(userId)`** — idempotent ₹0, never grants funds, so a fund-less player
+   gets `INSUFFICIENT_BALANCE` (a real domain answer) rather than `WALLET_NOT_FOUND`.
+5. **Pre-allocate `betId = new Types.ObjectId()`**, then one `withTransaction`:
+   - fresh `now = clock()`; re-read market + round **in the session**; re-run
+     `getBettingWindow` against `now` — the authoritative check at the transactional boundary
+     (a retry after real close fails here);
+   - `getPlatformSettings(session)` -> `payoutMultiplierSnapshot` (point-in-time under
+     `readConcern: "snapshot"`);
+   - `debitAvailableInSession({ type: "BET_PLACED", amountPaise: totalStakePaise,
+     idempotencyKey: BET_PLACED:<betId>, referenceType: "BET", referenceId: betId }, session)` —
+     **debit precedes the insert** so a bet-write failure demonstrably rolls the wallet back;
+   - pick a free `publicRef` (`Bet.exists({ publicRef }).session(session)`, bounded
+     `PUBLIC_REF_MAX_ATTEMPTS`), build + `validate()` the `Bet` document, then insert it with the
+     **native driver** (`Bet.collection.insertOne(doc.toObject(), { session })`). A Mongoose
+     document created in the session is reset by `connection.transaction()` on any retry, and
+     resetting the `strict:"throw"` `entryMetadata` sub-document throws — the plain insert
+     avoids that while the unique `bets.publicRef` and `(userId, clientRequestId)` indexes stay
+     the real backstop.
+6. **After commit** re-read the bet + round and return `buildReceipt(bet, market, round,
+   getWalletView(userId), now)` — the DTO is built from persisted state.
+7. **Lost `(userId, clientRequestId)` race** (two simultaneous identical requests): the loser's
+   insert hits the unique index, its whole transaction (debit included) rolls back, and the
+   `catch` recovers the winner outside the aborted transaction (`Bet.findOne` +
+   `betMatchesRequest` -> receipt, or `DUPLICATE_REQUEST`).
+
+### Receipt DTO — `BetPlacementReceipt`
+
+```text
+{ bet: { id, publicRef, market: {name, slug, code}, businessDate, entryMethod, entryMetadata,
+         selections: [{number, stakePaise}], totalSelections, totalStakePaise,
+         payoutMultiplierSnapshot, status, version, placedAt, editCutoffAt, closesAt,
+         canEditNow },
+  wallet: { currency, availableBalancePaise, reservedBalancePaise },
+  serverNow }
+```
+
+`bet.id` is the bet's own handle (consistent with the wallet DTOs' `id`); the user-facing
+reference is `publicRef`. Never serialized: `clientRequestId`, the ledger idempotency key,
+`marketId` / `marketRoundId` / `userId` / `walletId`, any admin field. `canEditNow` is
+`getBettingWindow(...).canEditBet` — `false` for a bet placed in `CLOSING_SOON`.
+
+### Route
+
+`POST /api/bets` — `export const dynamic = "force-dynamic"`; `isTrustedOrigin` (same-origin
+CSRF guard, matching the auth / quote / mock-deposit mutations) -> `requirePlayer()` (ACTIVE
+PLAYER; ADMIN -> `403 FORBIDDEN`, anonymous -> `401 UNAUTHENTICATED`, disabled/stale session ->
+rejected by `findActiveSessionUser`) -> `placeBetRequestSchema.parse` (Zod failure ->
+`400 INVALID_INPUT`) -> `placeBet` -> `{ data: BetPlacementReceipt }`. No `userId` from the
+client — the bet owner is the authenticated session.

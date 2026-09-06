@@ -424,6 +424,56 @@ The frozen rules above (JODI / CROSSING / COPY PASTE / Palti / stake / 90x payou
 - **Stake and payout are configuration-driven.** The minimum stake is `platformSettings.minimumStakePaise` (100) and the multiplier is `platformSettings.payoutMultiplier` (90), both read from the persisted singleton — never a literal. `perWinningSelectionCreditPaise = stakePaise × payoutMultiplier` in integer paise; the stake is not added back. A later window snapshots the multiplier onto each created bet; Window 4A1 persists nothing.
 - **Quote is non-binding.** `POST /api/bets/quote` validates and calculates only. It never reads or reserves wallet funds and never writes a bet / wallet / ledger document. It may create the day's operational `MarketRound` (existing Window 3A behaviour). Actual placement (a later window) revalidates market, settings and funds server-side and must not trust a stale client quote.
 
+### Window 4A3 implementation clarification (no business rule changed)
+
+Real player bet placement (`POST /api/bets`). Backend only — no betting/ticket UI. The frozen
+rules above (three entry methods normalizing to one selection set, ₹1 minimum stake per
+selection, no maximum, a bet cannot exceed available balance, immutable payout snapshot,
+`ACTIVE` initial status, one wallet transaction per money movement, `userId + clientRequestId`
+idempotency, a human-readable non-ObjectId reference) are implemented, not altered.
+
+- **Nothing trusts a quote.** Placement recomputes `selections`, `entryMetadata`,
+  `totalSelections` and `totalStakePaise` from the original entry input through the **same**
+  `normalizeBetEntry` engine the quote uses — quote, placement and future editing share one
+  wager interpretation. `POST /api/bets` accepts only `marketSlug`, `entryMethod`, the
+  method's raw input (`numbers` / `digits` / `rawInput` + `palti`), `stakePaise` and
+  `clientRequestId`; every authoritative value (`totalStakePaise`, `selectionCount`,
+  `selections`, `payoutMultiplier`, `marketRoundId`, `payout`, `publicRef`, wallet balance) is
+  server-derived and a `.strict()` schema rejects any of them in the body.
+- **Multiplier snapshot at placement time.** `bet.payoutMultiplierSnapshot` is
+  `platformSettings.payoutMultiplier` read from the persisted singleton *inside the placement
+  transaction*. A quote taken earlier at 90× is irrelevant; if the admin rate is 95× when the
+  bet commits, the snapshot is 95×. A later rate change never rewrites an existing bet's
+  snapshot — settlement uses `stake × payoutMultiplierSnapshot` and does not add the stake back.
+- **Market re-validation is at the transactional boundary.** The `getBettingWindow`
+  gate (`enabled AND round AND now ∈ [opensAt, closesAt) AND result absent AND settlement
+  PENDING`) is checked once before the transaction and **again inside it against a fresh server
+  clock**, so a retry that lands after the real close cannot create a bet. New placement is
+  allowed through the edit-locked `CLOSING_SOON` interval `[editCutoffAt, closesAt)` — at
+  exactly `closesAt` placement fails `MARKET_CLOSED`. A bet placed in that interval is valid
+  and simply immediately non-editable (`canEditNow: false`); edit cutoff is not bet close.
+- **One transaction, no partial success.** `Bet` insert + `availableBalancePaise` debit +
+  immutable `BET_PLACED` `walletTransactions` row commit or roll back together. The debit
+  filters on `availableBalancePaise >= totalStakePaise` (reserved funds are never spendable),
+  so a bet can never drive a balance negative; an insufficient balance, a market-state failure
+  or a bet-write failure leaves **no** `bets`, wallet or ledger change. The bet `_id` is
+  allocated before the transaction and reused for `Bet._id`, the ledger `referenceId` and the
+  deterministic ledger idempotency key `BET_PLACED:<betId>`.
+- **`clientRequestId` idempotency.** The frozen unique `(userId, clientRequestId)` index is
+  the backstop. A repeat of the *same* logical wager (same market, entry method, canonical
+  selections and stake — cosmetic raw-input differences that normalize identically count as
+  the same) returns the original bet with no second debit or ledger row, and does so **before**
+  the market-close re-check, so a retry at 17:50:01 of a bet placed at 17:49:59 is not
+  rejected. The same id reused for a *different* logical wager is `DUPLICATE_REQUEST` (409). Two
+  simultaneous identical requests resolve to one bet / one debit / one ledger row — the loser
+  collides on the unique index inside its aborted transaction and recovers the winner.
+- **Public reference.** `<MARKET CODE>-<MMDD>-<5 random>` e.g. `FB-0906-X7K29`. The random
+  suffix is `crypto.randomInt` over a 31-symbol Crockford-style alphabet (no `I O 0 1`),
+  ~28.6M per market-day; a rare collision is retried a bounded number of times against the
+  unique `bets.publicRef` index. Generated server-side, never client-controlled, not sequential,
+  `immutable` in the schema so it survives every future edit, and never regenerated on an
+  idempotent replay. It is not returned until the transaction has committed.
+
 ## BET EDITING
 
 A player may edit the ENTIRE bet until:

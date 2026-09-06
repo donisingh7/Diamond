@@ -218,3 +218,74 @@ idempotentReplay }`. Window 4A3's `POST /api/bets` will call `debitAvailableInSe
 the same transaction as `Bet.create`; edit uses the `BET_EDIT_*` types; settlement uses
 `WIN_CREDIT`; withdrawal workflow uses reserve/release/finalize; admin adjustment uses
 `ADMIN_CREDIT` / `ADMIN_DEBIT`. None of those higher-level workflows are implemented here.
+
+## Window 4A3 — implemented bet placement contract
+
+`POST /api/bets` is now a real route handler (`src/app/api/bets/route.ts`), `apiRoute`-wrapped
+with the shared `{data:...}` / `{error:{code,message}}` shape, requiring an **ACTIVE PLAYER**
+session via `requirePlayer()` (anonymous → `401 UNAUTHENTICATED`; **ADMIN** → `403 FORBIDDEN` —
+PLAYER-only, not widened; a disabled/deleted user's stale cookie is rejected by
+`findActiveSessionUser`). As a state-changing `POST` it requires a trusted `Origin` (`403` on
+mismatch), matching the auth / quote / mock-deposit mutations. `export const dynamic =
+"force-dynamic"`. The bet owner is the authenticated session — **no `userId` is accepted from
+the client**.
+
+The request is the Window 4A1 quote body plus **`clientRequestId`** (a client-generated UUID),
+using the SAME field names as `quoteRequestSchema`. Each `entryMethod` branch is `.strict()`,
+so the server refuses any client-supplied authoritative value — `totalStakePaise`,
+`selectionCount`, `selections`, `payoutMultiplier`, `marketRoundId`, `payout`, `publicRef`,
+wallet balance — all of which are server-derived. Placement **recomputes everything** through
+the shared `normalizeBetEntry` engine and the Window 3A market services; a prior quote is
+advisory and is not trusted (`binding: false`).
+
+| Route | Request body (discriminated on `entryMethod`, each branch `.strict()`) | `200` `data` | Notable errors |
+| --- | --- | --- | --- |
+| `POST /api/bets` | `{marketSlug, entryMethod:"JODI", numbers: string[] (1–100, each /^\d{2}$/), stakePaise: int>0, clientRequestId: uuid}` · `{marketSlug, entryMethod:"CROSSING", digits: /^\d+$/ (≤100), stakePaise, clientRequestId}` · `{marketSlug, entryMethod:"COPY_PASTE", rawInput: string (1–2000), palti: boolean, stakePaise, clientRequestId}` | `BetPlacementReceipt` | `401`, `403`, `INVALID_INPUT` (400 — malformed shape, non-UUID id, missing/irrelevant field), `INVALID_SELECTION` / `STAKE_BELOW_MINIMUM` / `MONEY_OUT_OF_RANGE` (422), `MARKET_NOT_FOUND` (404), `MARKET_DISABLED` / `MARKET_NOT_OPEN` / `MARKET_CLOSED` (422), `ROUND_NOT_FOUND` (404), `INSUFFICIENT_BALANCE` (422), `DUPLICATE_REQUEST` (409 — `clientRequestId` reused for a different logical wager) |
+
+`BetPlacementReceipt` =
+
+```text
+{ bet: { id, publicRef: "FB-0906-X7K29", market: { name, slug, code }, businessDate: "YYYY-MM-DD",
+         entryMethod, entryMetadata, selections: [{ number: "NN", stakePaise }],
+         totalSelections, totalStakePaise, payoutMultiplierSnapshot, status: "ACTIVE",
+         version: 1, placedAt: iso, editCutoffAt: iso, closesAt: iso, canEditNow: boolean },
+  wallet: { currency: "INR", availableBalancePaise, reservedBalancePaise },
+  serverNow: iso }
+```
+
+- `bet.id` is the bet's own handle (consistent with the wallet DTOs' `id`); the user-facing
+  ticket reference is `bet.publicRef`. **Never serialized:** `clientRequestId`, the ledger
+  idempotency key, `marketId` / `marketRoundId` / `userId` / `walletId`, any admin field.
+- `entryMetadata` mirrors the persisted `bets.entryMetadata` shape — `{numbers}` (JODI, the raw
+  submitted list) · `{digits}` (CROSSING) · `{rawInput, palti}` (COPY_PASTE). Not authoritative
+  over `selections`.
+- `selections` is the canonical de-duplicated wager in deterministic engine order, the common
+  `stakePaise` applied to every entry. `payoutMultiplierSnapshot` is `platformSettings.
+  payoutMultiplier` read inside the placement transaction — a later rate change never rewrites it.
+- `canEditNow` is `getBettingWindow(...).canEditBet` — `false` for a bet placed in the
+  edit-locked `CLOSING_SOON` interval `[editCutoffAt, closesAt)`, where new placement is still
+  allowed. The placement itself is valid; the bet is simply immediately non-editable.
+
+**Idempotency.** A retry with the same `clientRequestId` and the *same* logical wager (same
+market, entry method, canonical selections and stake — cosmetic raw-input differences that
+normalize identically count as the same) returns the **original** bet — same `id`, same
+`publicRef` — with no second wallet debit or ledger row, and does so **before** the market-close
+re-check (a replay at 17:50:01 of a bet placed at 17:49:59 is not rejected `MARKET_CLOSED`; a
+*new* `clientRequestId` after close is). The same id reused for a *different* logical wager is
+`DUPLICATE_REQUEST` (409). Two simultaneous identical requests resolve to one bet / one debit /
+one `BET_PLACED` ledger row.
+
+**Atomicity.** `Bet` insert + `availableBalancePaise` debit + immutable `BET_PLACED`
+`walletTransactions` row are one MongoDB transaction — any partial failure (insufficient
+balance, a market-state change, a bet-write failure) leaves no `bets`, wallet or ledger change.
+Reserved balance is never spendable for a bet.
+
+Deliberate, documented refinements of the "Proposed DTO conventions" sketch (which predates
+this window), consistent with Window 4A1/4A2:
+
+- the request carries **`stakePaise`** (integer paise), not `stakeRupees` decimal text —
+  integer paise end to end;
+- the market is identified by **`marketSlug`**, not `marketRoundId` (never expose a Mongo
+  ObjectId to the client); the receipt does not return `marketRoundId` at all;
+- the success response is `200` with `{ data: BetPlacementReceipt }` (not `201`), matching every
+  other mutation route in this codebase, and carries `serverNow`.

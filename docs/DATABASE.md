@@ -556,3 +556,33 @@ Fixture note: integration tests may seed a `wallets` balance directly for isolat
 concurrency/primitive checks (brief §41). Production/business code never initialises a balance
 outside a ledgered movement — Mock Deposit and every future funding path go through
 `applyWalletMovement`.
+
+### Window 4A3 — bet placement: no schema or index change
+
+**No collection, field, validator, hook or index was added or changed.** `bets` and
+`walletTransactions` are used exactly as Window 1 / 4A2 defined them:
+
+- **`bets` `{ userId: 1, clientRequestId: 1 }` unique** is the verified correctness backstop
+  for client-request idempotency. A repeat of the same logical wager is recovered before the
+  market-close re-check; the same id + a different logical wager is `DUPLICATE_REQUEST`; two
+  simultaneous identical requests collide here (E11000) and the loser's whole transaction
+  (debit + insert) rolls back, then the winner is re-read. Confirmed present by
+  `schemas.test.ts` and exercised by `bet-placement.integration.ts`.
+- **`bets` `{ publicRef: 1 }` unique** backs the human reference. `placeBet` picks a free
+  `publicRef` with a bounded pre-check (`Bet.exists({ publicRef }).session(session)`,
+  `PUBLIC_REF_MAX_ATTEMPTS = 5`) before inserting; the unique index is the final guarantee if a
+  candidate is taken between the check and the insert.
+- **`walletTransactions` `{ idempotencyKey: 1 }` unique** — the `BET_PLACED` row carries the
+  deterministic key `BET_PLACED:<betId>` (matching the documented scheme), so a replay never
+  double-credits and the row is reconstructable from the bet id. `referenceType: "BET"` /
+  `referenceId: <betId>` (indexed) link the ledger row to the bet.
+- The `Bet` document is inserted **with the native driver** inside the placement transaction
+  (`Bet.collection.insertOne(betDoc.toObject(), { session })`) after `betDoc.validate()` runs
+  the schema's `pre("validate")` invariants. A Mongoose document created inside a
+  `connection.transaction()` session is reset on any retry, and resetting the `strict:"throw"`
+  `entryMetadata` sub-document throws `StrictModeError`; the plain insert sidesteps that. The
+  ODM validation still runs (before the insert); the unique indexes still enforce correctness.
+- Type-only additions to `bet.model.ts`: `BetRecord` (`InferSchemaType`) and `BetDoc`
+  (`HydratedDocument`). `platform-settings.service.ts`'s `getPlatformSettings` gained an
+  optional `session?: ClientSession` parameter (backward-compatible) so the payout-multiplier
+  snapshot can be read inside the placement transaction.
