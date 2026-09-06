@@ -435,3 +435,110 @@ No new codes. `INVALID_SELECTION` (422) covers every malformed entry (Jodi value
 ### Idempotency / reusability
 
 `normalizeBetEntry` is the single normalization entry point the future bet-place and bet-edit services must reuse, so quote and placement can never diverge. The `NormalizeBet` contract return type was widened from `readonly NormalizedSelection[]` to the full `NormalizedBetEntry` for this reason.
+
+## Window 4A2: wallet core, immutable ledger, transaction-safe balance movement, mock deposit, player wallet reads
+
+Backend / financial domain only. The wallet layer that upcoming bet placement, bet editing,
+withdrawals, settlement and admin adjustments all reuse. **No `Bet.create`, no public bet ref,
+no bet placement/edit endpoint, no `BetRevision`, no `withdrawals` document or API, no admin
+wallet API/UI, no settlement, no real payment gateway, no wallet UI, no visual work.** Window
+2A's visual design remains pending a dedicated Codex visual-browser refinement pass; this
+window built no UI.
+
+### Module layout
+
+```text
+lib/errors/domain-error.ts        # + WALLET_NOT_FOUND (404), INVALID_AMOUNT (422)
+modules/wallet/
+  models/
+    wallet.model.ts               # unchanged shape; + WalletRecord / WalletDoc type exports
+    wallet-transaction.model.ts   # unchanged shape; + WalletTransactionType / WalletTransactionRecord /
+                                  #   WalletTransactionRow / WalletTransactionDoc type exports
+  services/
+    wallet.service.ts             # THE sole balance writer + reusable primitives (server-only)
+    mock-deposit.service.ts       # standalone Mock Deposit — owns its transaction, idempotent recovery
+    wallet-transactions.service.ts# bounded player ledger read + DTO + opaque cursor
+  validators/wallet-input.ts      # Zod: mockDepositSchema, walletTransactionsQuerySchema (.strict)
+src/app/api/wallet/route.ts             # GET  (ACTIVE PLAYER)
+src/app/api/wallet/mock-deposit/route.ts# POST (ACTIVE PLAYER, same-origin)
+src/app/api/wallet/transactions/route.ts# GET  (ACTIVE PLAYER)
+```
+
+`src/modules/wallet/services/wallet.contract.ts` (Window 1's `WalletService.applyMovement`
+sketch) is **removed** — it is now the implemented `wallet.service.ts`, and a redundant
+re-export file would be the kind of abstraction CODEX_RULES #19 forbids. It had no importers.
+
+### Two layers: the primitive and the named wrappers
+
+`applyWalletMovement(input, session)` is the **transaction-scoped primitive** and the only code
+that mutates a `wallets` balance. It MUST be called with a `ClientSession` a higher-level
+service owns — so Window 4A3 can make `Bet.create` + wallet debit + `walletTransactions` insert
+one atomic transaction — and it never opens its own transaction. It:
+
+1. `assertMovementAmount` (whole paise, ≥ 1, safe integer) and derives the deltas from
+   `movementDeltas(type, amountPaise)` — the frozen type→movement table.
+2. Idempotency pre-check: an already-committed `walletTransactions` row with this key returns
+   its result with `idempotentReplay: true` and **no** second mutation; a row with a different
+   `type`/`amount`/`user` is `DUPLICATE_REQUEST`.
+3. One conditional `Wallet.findOneAndUpdate` — a debit filters `availableBalancePaise >= amount`
+   (reserved debits `reservedBalancePaise >= amount`) and `$inc`s both buckets. `null` result
+   → `INSUFFICIENT_BALANCE` (wallet exists) or `WALLET_NOT_FOUND`.
+4. `WalletTransaction.create([...], { session })` with `before = after − delta` for both
+   buckets; the model's `pre("validate")` reconciles it independently.
+
+Named ergonomic wrappers (Window 4A2 brief §8), each type-narrowed:
+`creditAvailableInSession` (MOCK_DEPOSIT | BET_EDIT_REFUND | WIN_CREDIT | ADMIN_CREDIT),
+`debitAvailableInSession` (BET_PLACED | BET_EDIT_DEBIT | ADMIN_DEBIT), `reserveInSession`
+(WITHDRAWAL_RESERVED), `releaseReservedInSession` (WITHDRAWAL_RELEASED),
+`finalizeReservedInSession` (WITHDRAWAL_APPROVED). Plus `createPlayerWallet`, `getWalletDoc`,
+`getWalletView` (lazy-ensures a ₹0 wallet, never grants funds), `toWalletView`,
+`getTransactionByIdempotencyKey`.
+
+### Concurrency
+
+The conditional `findOneAndUpdate` is the whole race protection — no read-modify-write in JS.
+Under `readConcern: "snapshot"` two racing debits both pass their (stale) snapshot's guard, the
+first commits, the second hits a write conflict, and `withTransaction`'s retry re-runs the
+callback against the now-lower balance where the guard fails → `INSUFFICIENT_BALANCE`. Proven
+by an integration test: available `10000`, two concurrent `8000` debits → one succeeds, one
+`INSUFFICIENT_BALANCE`, final `2000`, exactly one ledger row, never negative (and a 6-racer
+`4000`-debit variant lands on exactly `2000`).
+
+### Idempotency and partial-failure safety
+
+A concurrent, not-yet-committed duplicate collides on the unique `idempotencyKey` index at
+insert time (E11000). A **standalone** caller (Mock Deposit) catches that *outside* the aborted
+transaction, re-reads the original row, verifies payload equivalence and returns the original
+receipt — so an HTTP retry, a Mongo internal transaction retry, or two truly simultaneous
+requests all credit exactly once. Because the balance `$inc` and the ledger insert are in the
+same transaction, there is never "balance moved, ledger missing" or the inverse.
+
+### Mock Deposit
+
+`mockDeposit({ userId, amountPaise, clientRequestId })` — checks
+`platformSettings.mockDepositEnabled` (`FORBIDDEN` if off), `assertMockDepositAmount` (≥ 100
+paise = ₹1, no maximum, `MONEY_OUT_OF_RANGE` beyond safe integer), `createPlayerWallet`
+(idempotent ₹0), then wraps `applyWalletMovement(type: "MOCK_DEPOSIT")` in its own
+`withTransaction`. `idempotencyKey = MOCK_DEPOSIT:<userId>:<clientRequestId>`.
+
+### Player read APIs
+
+`GET /api/wallet` → `{ wallet: { currency, availableBalancePaise, reservedBalancePaise,
+totalBalancePaise }, serverNow }` — `totalBalancePaise` is derived (`available + reserved`),
+never persisted. `GET /api/wallet/transactions` → newest-first, **always bounded**
+(`?limit=` 1–100 default 20, opaque `?cursor=` carrying the last row's `(createdAt, _id)` for
+gap/overlap-free paging). The ledger DTO exposes `type`, `amountPaise`, both deltas, both
+before/after pairs, `referenceType` and `createdAt` only — never `idempotencyKey`,
+`createdByAdminId`, `walletId` or `userId`. Both routes derive identity from
+`requirePlayer()`; a client `userId` is never trusted; an ADMIN session is `403`.
+
+### Reuse contract for later windows
+
+Window 4A3 bet placement calls `debitAvailableInSession({ session, userId, amountPaise,
+type: "BET_PLACED", idempotencyKey, referenceType, referenceId })` inside its own transaction —
+the wallet validates funds, debits once, ledgers immutably, and participates in the caller's
+transaction, but knows nothing about bets (the dependency is Bet → Wallet, never the reverse;
+`referenceType`/`referenceId` carry the generic link). Bet edit uses `BET_EDIT_DEBIT` /
+`BET_EDIT_REFUND`; settlement uses `WIN_CREDIT`; withdrawals use reserve/release/finalize;
+admin uses `ADMIN_CREDIT` / `ADMIN_DEBIT` — all already implemented and tested as primitives,
+with none of their higher-level workflows built.

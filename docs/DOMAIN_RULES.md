@@ -567,6 +567,48 @@ maximum = none
 
 Mock deposit credits available wallet and creates a ledger record.
 
+### Window 4A2 implementation clarification (no business rule changed)
+
+The frozen wallet rules above (one wallet per player, available vs reserved, no negative
+balances, every movement ledgered, the ten transaction types, Mock Deposit ₹1 minimum / no
+maximum) are implemented as the reusable wallet core. Nothing was altered.
+
+- **Type → balance-movement is a frozen table, derived by the service.** `movementDeltas(type,
+  amountPaise)` is the single authoring point for `(availableDeltaPaise, reservedDeltaPaise)`:
+  `MOCK_DEPOSIT` / `BET_EDIT_REFUND` / `WIN_CREDIT` / `ADMIN_CREDIT` → `+amount` available;
+  `BET_PLACED` / `BET_EDIT_DEBIT` / `ADMIN_DEBIT` → `-amount` available; `WITHDRAWAL_RESERVED`
+  → `-amount` available `+amount` reserved; `WITHDRAWAL_RELEASED` → `+amount` available
+  `-amount` reserved; `WITHDRAWAL_APPROVED` → `-amount` reserved only. The service never
+  accepts deltas from a caller, so an impossible delta can never be paired with a type; the
+  `walletTransactions` model's `pre("validate")` reconciliation is the independent backstop.
+- **Available vs reserved.** `availableBalancePaise` funds betting, withdrawal reservation and
+  admin debit. `reservedBalancePaise` is money already held for a pending withdrawal — it is
+  never spendable for a bet, another reservation or a normal admin debit. A debit filters on
+  `availableBalancePaise >= amount` (reserved debits on `reservedBalancePaise >= amount`), so
+  balances can never go negative. Window 4A2 implements the reserve/release/finalize
+  primitives; it creates **no** `withdrawals` document.
+- **Ledger is append-only in normal operation.** Every balance mutation writes exactly one
+  `walletTransactions` row inside the same MongoDB transaction — there is no "balance changed
+  but ledger absent" or "ledger exists but balance unchanged" state. Corrections are
+  compensating entries, never edits/deletes. The only deletion exception remains a future hard
+  player purge.
+- **Idempotency.** Every movement carries a globally unique `idempotencyKey`. The same key +
+  the same logical operation returns the original result without moving money again; the same
+  key + a different `type`/`amount`/`user` is rejected `DUPLICATE_REQUEST` (409). Mock Deposit
+  builds its key deterministically as `MOCK_DEPOSIT:<userId>:<clientRequestId>` — the amount is
+  never part of the key, so two different request ids are two intentional deposits and a
+  repeated request id credits once. Future keys follow the same scheme
+  (`BET_PLACED:<betId>`, `WIN_CREDIT:<betId>`, `WITHDRAWAL_RESERVED:<withdrawalId>`, …).
+- **Wallet creation is ₹0, ledger-free, idempotent.** `createPlayerWallet(userId)` upserts a
+  zero-value wallet; it never grants funds. Admin "create player" (a later window) calls it
+  inside its transaction; the player wallet read/deposit APIs call it opportunistically so a
+  player always has a wallet regardless of creation order. Any real starting balance is a
+  later, separately ledgered admin movement.
+- **Mock Deposit is validated at ₹1 minimum with no product maximum** — only safe-integer
+  precision applies (`MONEY_OUT_OF_RANGE` beyond it, `INVALID_AMOUNT` below ₹1). It honours
+  `platformSettings.mockDepositEnabled`. No gateway, no Razorpay, no UPI, no async settlement:
+  an immediate ledgered credit.
+
 ## WITHDRAWAL
 
 Prototype methods:

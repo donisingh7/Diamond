@@ -199,3 +199,109 @@ New integration coverage (`bets.integration.ts`): 3 JODI @ ₹10 → ₹30 total
 Manual HTTP verification used a **disposable** `mongodb-memory-server-core` replica set (seeded with the six markets, one ACTIVE player, one ACTIVE admin) plus a real `next dev` on port 3799 — the user's configured `.env`/database was never touched. The temporary driver script lived under `scratchpad/` and was deleted afterward. Exercised and observed: unauthenticated `POST /api/bets/quote` → 401; player password login → 200 + `diamond_session` cookie; `GET /api/markets` to pick a market open at real wall-clock time (Ghaziabad); authenticated `POST /api/bets/quote` for JODI (→ 200, `selectionCount 3`, `totalStakePaise 3000`, `perWinningSelectionCreditPaise 90000`, `payoutMultiplier 90`, `binding:false`, string `marketRoundId`), CROSSING `428935` (→ 200, 36 selections, `totalStakePaise 36000`), COPY_PASTE without Palti (→ `22,15,48,96,35`) and with Palti (→ `22,15,51,48,84,96,69,35,53`); a malformed number `["7"]` → 400; an irrelevant cross-method field (`digits` on a JODI body) → 400; a mismatched `Origin` header → 403; a market disabled mid-run → 422 `MARKET_DISABLED` (restored after); an ADMIN session → 403; and `bets` / `wallets` / `walletTransactions` all still empty at the end. The dev server, the disposable database and the temporary script were stopped and removed afterward.
 
 No live `npm run db:check` / `npm run db:seed` against the user's configured database was run in this window; all database verification used disposable replica sets. Window 2A visual quality remains pending Codex visual-browser refinement.
+
+## Window 4A2 handoff status
+
+Window 4A2 (wallet core + immutable ledger + transaction-safe balance movement + Mock Deposit
++ player wallet read APIs) is complete. **Backend / financial domain only.** See
+ARCHITECTURE.md's "Window 4A2" section for the design, DOMAIN_RULES.md's "Window 4A2
+implementation clarification" for the frozen-rule mapping, API_CONTRACTS.md's "Window 4A2 —
+implemented player wallet contract" for exact shapes, and DATABASE.md's "Window 4A2 — wallet
+core: no wallet schema change".
+
+Implemented:
+
+- `modules/wallet/services/wallet.service.ts` — the sole `wallets` balance writer.
+  `applyWalletMovement(input, session)` transaction-scoped primitive (frozen `movementDeltas`
+  table, conditional `findOneAndUpdate` guard, idempotency pre-check + unique-index backstop,
+  atomic `walletTransactions` insert). Named wrappers `creditAvailableInSession`,
+  `debitAvailableInSession`, `reserveInSession`, `releaseReservedInSession`,
+  `finalizeReservedInSession`. `createPlayerWallet` (idempotent ₹0), `getWalletDoc`,
+  `getWalletView`, `toWalletView`, `getTransactionByIdempotencyKey`.
+- `modules/wallet/services/mock-deposit.service.ts` — `mockDeposit(...)`, owns its
+  `withTransaction`, deterministic `MOCK_DEPOSIT:<userId>:<clientRequestId>` key, E11000
+  recovery outside the aborted transaction.
+- `modules/wallet/services/wallet-transactions.service.ts` — `listWalletTransactions` bounded
+  cursor pagination (default 20, max 100, newest first), player-safe `WalletTransactionDTO`.
+- `modules/wallet/validators/wallet-input.ts` — `mockDepositSchema`,
+  `walletTransactionsQuerySchema` (both `.strict()`).
+- Routes: `GET /api/wallet`, `POST /api/wallet/mock-deposit`, `GET /api/wallet/transactions` —
+  thin, `requirePlayer()`-gated, `apiRoute`-wrapped, `force-dynamic`; the POST also same-origin.
+- `lib/errors/domain-error.ts` — added `WALLET_NOT_FOUND` (404), `INVALID_AMOUNT` (422).
+- Type-only exports added to `wallet.model.ts` / `wallet-transaction.model.ts`. No schema,
+  validator, hook or index changed. `wallet.service.ts` supersedes and replaces the deleted
+  Window 1 `wallet.contract.ts` sketch.
+
+Deliberately **not** done (out of window): `Bet.create`, public bet refs, bet placement/edit
+endpoints, `BetRevision`, `withdrawals` documents/APIs, admin wallet adjustment API/UI, result
+settlement, real payment gateway / Razorpay / UPI, any wallet or ticket UI, any Window 2A
+visual redesign. The reserve/release/finalize and `BET_*` / `WIN_CREDIT` / `ADMIN_*`
+primitives exist and are tested, but none of their higher-level workflows were built.
+
+**Window 2A's visual design (colors, glass strength, ticket appearance) remains pending a
+dedicated Codex visual-browser refinement pass. This window built no UI and attempted no
+Window 2A visual redesign.** A future agent must not read this window's completion as visual
+sign-off.
+
+## Verification record — 2026-09-06 (Window 4A2)
+
+| Check | Result |
+| --- | --- |
+| `npm.cmd run typecheck` | PASS; strict TypeScript incl. new services/validators/routes/tests |
+| `npm.cmd run lint` | PASS; no warnings |
+| `npm.cmd test` | PASS; 163 tests across 13 files (134 prior + 29 new in `wallet.test.ts`) |
+| `npm.cmd run test:integration` | PASS; 92 tests across 5 files (64 prior + 28 new in `wallet.integration.ts`) against a disposable MongoDB 8.2.6 replica set |
+| `npm.cmd run build` | PASS; `/api/wallet`, `/api/wallet/mock-deposit`, `/api/wallet/transactions` registered as dynamic route handlers |
+| `git diff --check` | PASS; no whitespace errors |
+| Manual HTTP/E2E verification | PASS — see below |
+
+New unit coverage (`wallet.test.ts`): the frozen `movementDeltas` table for all ten ledger
+types (+ value-conservation invariant); `assertMovementAmount` / `assertMockDepositAmount`
+(₹1 min, no max, `INVALID_AMOUNT` below, `MONEY_OUT_OF_RANGE` on fractional / unsafe);
+`buildMockDepositKey` determinism (user + op + requestId, never the amount); `toWalletView`
+total derivation; `toWalletTransactionDTO` field allowlist (no `idempotencyKey` /
+`createdByAdminId` / `walletId` / `userId`); pagination-limit clamp `[1,100]` default 20;
+opaque cursor round-trip + malformed-cursor `INVALID_INPUT`; `isDuplicateKeyError`;
+`mockDepositSchema` / `walletTransactionsQuerySchema` accept/reject cases.
+
+New integration coverage (`wallet.integration.ts`): `createPlayerWallet` idempotent + single
+under 8-way concurrency; `WALLET_NOT_FOUND` when absent; **concurrency §30** — available
+`10000`, two concurrent `8000` debits → one succeeds / one `INSUFFICIENT_BALANCE` / final
+`2000` / one ledger row / never negative (+ 6-racer `4000`-debit → exactly `2000`, two rows);
+**idempotency §31** — duplicate Mock Deposit credits once with one `MOCK_DEPOSIT` row; reused
+`clientRequestId` + different amount → `DUPLICATE_REQUEST`, no second movement; two concurrent
+identical deposits → one credit; `applyWalletMovement` replays a committed key with
+`idempotentReplay: true` and no mutation; **reserve/release/finalize §32** — exact
+before/after/delta on every transition, guards reject over-reserve / over-release /
+over-finalize, reserved funds not debitable; **bet-type primitives §33** — `BET_PLACED` /
+`BET_EDIT_DEBIT` / `BET_EDIT_REFUND` / `WIN_CREDIT` directions; **admin-type primitives §34** —
+`ADMIN_CREDIT` / `ADMIN_DEBIT`, debit cannot go negative, `createdByAdminId` recorded;
+**rollback §35** — a movement inside a caller `withTransaction` that then throws leaves the
+balance unchanged and writes no ledger row; a caller combining two primitives commits both
+atomically; **Mock Deposit §13/§36** — ₹1 accepted, ₹5cr accepted (no max), 99 paise /
+fractional / negative / unsafe rejected, `mockDepositEnabled:false` → `FORBIDDEN`, correct
+`MOCK_DEPOSIT` ledger row; **reads §16/§17/§37** — `getWalletView` derives total and
+lazy-creates ₹0; ledger newest-first, default limit 20, explicit limit honoured, capped at
+data size, never another player's rows, malformed cursor `INVALID_INPUT`, DTO carries full
+before/after/delta and no internal metadata; **scope guard §39/§40** — a full wallet exercise
+writes no `bets` / `betRevisions` / `withdrawals` document.
+
+Manual HTTP verification used a **disposable** `mongodb-memory-server-core` replica set
+(seeded with the six markets, one ACTIVE player, one ACTIVE admin) plus a real `next dev` on
+port 3941 — the user's configured `.env`/database was never touched. The temporary driver
+script lived under `scratchpad/` and was deleted afterward. Exercised and observed: `GET
+/api/wallet` unauthenticated → 401; player login → 200 + `diamond_session` cookie; `GET
+/api/wallet` (player) → 200 `₹0` wallet with derived `totalBalancePaise: 0`; `POST
+/api/wallet/mock-deposit {amountPaise:10000, clientRequestId:<uuid>}` → 200, transaction +
+`availableBalancePaise: 10000`; `GET /api/wallet` → `10000`; the same `clientRequestId`
+replayed → 200, same `transaction.id`, still `10000`; the same `clientRequestId` with
+`amountPaise:20000` → 409 `DUPLICATE_REQUEST`; `GET /api/wallet/transactions` → exactly one
+`MOCK_DEPOSIT` row, no `idempotencyKey` field; a mismatched `Origin` on the deposit → 403; a
+99-paise deposit → 422 `INVALID_AMOUNT`; an ADMIN session against all three wallet routes →
+403; and `bets` / `withdrawals` empty with exactly one `wallets` doc and one
+`walletTransactions` row at the end. The dev server, the disposable database and the temporary
+script were stopped and removed afterward.
+
+No live `npm run db:check` / `npm run db:seed` against the user's configured database was run
+in this window; all database verification used disposable replica sets. Window 2A visual
+quality remains pending Codex visual-browser refinement.

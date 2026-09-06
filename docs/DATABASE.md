@@ -520,3 +520,39 @@ No new collections. Markets and rounds still derive every view (today, 7-day, 30
 ### Window 4A1 — no schema change
 
 No new collections, models or indexes. The betting engines are pure and touch no database. `POST /api/bets/quote` writes **no** `bets` / `betRevisions` / `wallets` / `walletTransactions` document — it only reads `platformSettings` and `markets`, and may create the day's operational `marketRounds` row exactly as the Window 3A market/results reads already do. `platformSettings` gained a read-only accessor (`getPlatformSettings`) only; no mutation path and the seed default rate (90) is unchanged. The `bets.entryMetadata` sub-document shape (`{numbers}` | `{digits}` | `{rawInput, palti}`) and the `selections` array shape are unchanged — the engines produce exactly that shape for a future placement window to persist.
+
+### Window 4A2 — wallet core: no wallet schema change, two new error codes
+
+**No collection or index change.** `wallets` (`userId` unique) and `walletTransactions`
+(`userId + createdAt`, `referenceId`, `idempotencyKey` unique) are used exactly as Window 1
+defined them:
+
+- `walletTransactions.idempotencyKey` unique index is the correctness backstop for
+  duplicate-request protection — a concurrent duplicate movement collides here (E11000) and the
+  standalone caller recovers the original outside the aborted transaction.
+- `wallets` unique `userId` guarantees one wallet per player; `createPlayerWallet` upserts and
+  recovers a lost create race by re-reading the winner.
+- `{ userId: 1, createdAt: -1 }` on `walletTransactions` serves the newest-first
+  `GET /api/wallet/transactions` page directly; the opaque cursor carries `(createdAt, _id)`.
+- Balances mutate **only** through one conditional `findOneAndUpdate` (`$inc` with an
+  `availableBalancePaise >= amount` / `reservedBalancePaise >= amount` guard) inside a
+  transaction — never a document `.save()` read-modify-write. `optimisticConcurrency` in
+  `schemaOptions` is irrelevant to that path (it only affects `.save()`).
+
+Type-only additions to the two model files: `WalletRecord` / `WalletDoc`;
+`WalletTransactionType` / `WalletTransactionRecord` / `WalletTransactionRow` (lean-read shape
+with `_id` + `createdAt`) / `WalletTransactionDoc`. No field, validator, hook or index changed.
+
+`lib/errors/domain-error.ts` gained `WALLET_NOT_FOUND` (404) and `INVALID_AMOUNT` (422).
+`INSUFFICIENT_BALANCE` (422) and `DUPLICATE_REQUEST` (409) already existed and are reused
+verbatim — `DUPLICATE_REQUEST` is the idempotency-key-reuse-with-different-payload conflict
+(matching ARCHITECTURE.md's "Reuse with a different payload is DUPLICATE_REQUEST" rule); no
+synonymous `IDEMPOTENCY_CONFLICT` code was added.
+
+`src/modules/wallet/services/wallet.contract.ts` (the Window 1 `WalletService` interface
+sketch) was deleted — superseded by the implemented `wallet.service.ts`, no importers.
+
+Fixture note: integration tests may seed a `wallets` balance directly for isolated
+concurrency/primitive checks (brief §41). Production/business code never initialises a balance
+outside a ledgered movement — Mock Deposit and every future funding path go through
+`applyWalletMovement`.

@@ -1,4 +1,4 @@
-import { Schema } from "mongoose";
+import { Schema, type InferSchemaType, type HydratedDocument } from "mongoose";
 import { modelFor, schemaOptions, userRef, paise } from "@/lib/db/schema";
 
 export const walletSchema = new Schema({
@@ -8,4 +8,6 @@ export const walletSchema = new Schema({
   reservedBalancePaise: { ...paise, default: 0 },
 }, schemaOptions);
 walletSchema.index({ userId: 1 }, { unique: true });
+export type WalletRecord = InferSchemaType<typeof walletSchema>;
+export type WalletDoc = HydratedDocument<WalletRecord>;
 export const Wallet = modelFor("Wallet", walletSchema, "wallets");

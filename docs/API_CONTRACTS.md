@@ -158,3 +158,63 @@ Two deliberate, documented refinements of the "Proposed DTO conventions" sketch 
 - `binding: false` is a literal constant marking the quote advisory.
 
 No `clientRequestId` / idempotency key — that belongs to placement. Repeated identical quote requests return equivalent results for the same server state and settings.
+
+## Window 4A2 — implemented player wallet contract
+
+Three route handlers under `src/app/api/wallet/**`, all `apiRoute`-wrapped (`{data:...}` /
+`{error:{code,message}}`), all requiring an **ACTIVE PLAYER** session via `requirePlayer()`
+(anonymous → `401 UNAUTHENTICATED`; **ADMIN** → `403 FORBIDDEN` — PLAYER-only, not widened),
+all `export const dynamic = "force-dynamic"`. Identity is always the authenticated session —
+a client-supplied `userId` is never accepted for a wallet read or mutation. Every response
+carries `serverNow` (ISO-8601). The two GETs are exempt from the same-origin check (matching
+`GET /api/auth/me`); the `POST` requires a trusted `Origin` (`403` on mismatch).
+
+| Route | Request | `200` `data` | Notable errors |
+| --- | --- | --- | --- |
+| `GET /api/wallet` | none | `{ wallet: WalletView, serverNow }` | `401`, `403` |
+| `POST /api/wallet/mock-deposit` | `{ amountPaise: int > 0, clientRequestId: uuid }` (`.strict()`) | `{ transaction: { id, type:"MOCK_DEPOSIT", amountPaise }, wallet: WalletView, serverNow }` | `401`, `403` (also cross-origin, ADMIN, `mockDepositEnabled:false`), `INVALID_INPUT` (400 — bad shape / non-UUID id / stray key), `INVALID_AMOUNT` (422 — below ₹1), `MONEY_OUT_OF_RANGE` (422 — beyond safe integer), `DUPLICATE_REQUEST` (409 — `clientRequestId` reused with a different amount) |
+| `GET /api/wallet/transactions` | `?limit=` 1–100 (default 20), `?cursor=` opaque (`.strict()`) | `{ transactions: WalletTransactionDTO[], nextCursor: string \| null, serverNow }` | `401`, `403`, `INVALID_INPUT` (400 — `limit` out of range, stray param, malformed cursor) |
+
+`WalletView` = `{ currency: "INR", availableBalancePaise, reservedBalancePaise,
+totalBalancePaise }`. `totalBalancePaise` is derived (`available + reserved`), not persisted.
+
+`WalletTransactionDTO` = `{ id, type, amountPaise, availableDeltaPaise, reservedDeltaPaise,
+availableBeforePaise, availableAfterPaise, reservedBeforePaise, reservedAfterPaise,
+referenceType: string | null, createdAt: iso }`. Newest first. Internal admin/security
+metadata — `idempotencyKey`, `createdByAdminId`, `walletId`, `userId` — is **never**
+serialized. The list is always bounded; there is no all-history response. `nextCursor` is an
+opaque base64url token over the last row's `(createdAt, _id)`; pass it back as `?cursor=` for
+the next (older) page, `null` means the last page was returned.
+
+Deliberate, documented refinements of the "Proposed DTO conventions" sketch (which predates
+this window):
+
+- `mock-deposit` takes **`amountPaise`** (integer paise) not `amountRupees` decimal text —
+  Window 4A2 is integer-paise end to end. The ₹1 minimum and safe-integer ceiling are enforced
+  by the service (`assertMockDepositAmount`), not just this route's Zod, so every future caller
+  of the wallet core gets the same checks — a below-minimum deposit is `INVALID_AMOUNT` (422),
+  not a generic 400.
+- `mock-deposit`'s response includes `serverNow` in addition to the sketch's
+  `{ transaction, wallet }` — additive, consistent with every other route in this codebase.
+- No `POST /api/wallet/credit` or any generic credit route exists — Mock Deposit is the **only**
+  public player credit path in the prototype. Admin credit/debit, withdrawals, settlement and
+  bet debits use the internal `wallet.service` primitives from their own (unbuilt) windows.
+
+### Reuse contract for later windows (not yet routed)
+
+The wallet core exposes transaction-scoped primitives a caller invokes with its own
+`ClientSession`:
+
+```text
+applyWalletMovement({ userId, type, amountPaise, idempotencyKey, referenceType?, referenceId?, actorAdminId? }, session)
+debitAvailableInSession(...)     // BET_PLACED | BET_EDIT_DEBIT | ADMIN_DEBIT
+creditAvailableInSession(...)    // MOCK_DEPOSIT | BET_EDIT_REFUND | WIN_CREDIT | ADMIN_CREDIT
+reserveInSession(...) / releaseReservedInSession(...) / finalizeReservedInSession(...)
+createPlayerWallet(userId, session?) / getWalletView(userId) / getTransactionByIdempotencyKey(key, session?)
+```
+
+Each returns `{ transactionId, type, amountPaise, availableBalancePaise, reservedBalancePaise,
+idempotentReplay }`. Window 4A3's `POST /api/bets` will call `debitAvailableInSession` inside
+the same transaction as `Bet.create`; edit uses the `BET_EDIT_*` types; settlement uses
+`WIN_CREDIT`; withdrawal workflow uses reserve/release/finalize; admin adjustment uses
+`ADMIN_CREDIT` / `ADMIN_DEBIT`. None of those higher-level workflows are implemented here.

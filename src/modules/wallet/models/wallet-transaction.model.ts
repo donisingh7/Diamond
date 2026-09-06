@@ -1,4 +1,4 @@
-import { Schema } from "mongoose";
+import { Schema, type InferSchemaType, type HydratedDocument, type Types } from "mongoose";
 import { modelFor, createdOnlyOptions, userRef, optionalUserRef, paise, integer, requiredText } from "@/lib/db/schema";
 import { safeAdd } from "@/lib/money";
 
@@ -6,6 +6,7 @@ export const walletTransactionTypes = [
   "MOCK_DEPOSIT", "BET_PLACED", "BET_EDIT_DEBIT", "BET_EDIT_REFUND", "WIN_CREDIT",
   "WITHDRAWAL_RESERVED", "WITHDRAWAL_RELEASED", "WITHDRAWAL_APPROVED", "ADMIN_CREDIT", "ADMIN_DEBIT",
 ] as const;
+export type WalletTransactionType = (typeof walletTransactionTypes)[number];
 export const walletTransactionSchema = new Schema({
   userId: userRef,
   walletId: { type: Schema.Types.ObjectId, ref: "Wallet", required: true },
@@ -40,4 +41,8 @@ walletTransactionSchema.pre("validate", function () {
 walletTransactionSchema.index({ userId: 1, createdAt: -1 });
 walletTransactionSchema.index({ referenceId: 1 });
 walletTransactionSchema.index({ idempotencyKey: 1 }, { unique: true });
+export type WalletTransactionRecord = InferSchemaType<typeof walletTransactionSchema>;
+/** Lean-read shape: `_id` and the create-only `createdAt` timestamp are not in `InferSchemaType`. */
+export type WalletTransactionRow = WalletTransactionRecord & { _id: Types.ObjectId; createdAt: Date };
+export type WalletTransactionDoc = HydratedDocument<WalletTransactionRecord>;
 export const WalletTransaction = modelFor("WalletTransaction", walletTransactionSchema, "walletTransactions");
