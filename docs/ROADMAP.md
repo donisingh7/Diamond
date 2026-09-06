@@ -96,3 +96,27 @@ Window 2B (session/OTP/login backend, protected route wiring) was intentionally 
 | Browser visual QA | Not performed — no screenshot/browser tool was available in this environment. Verification was HTML-output and code-level (media query review against the 320–1440px+ target widths) only; a human/visual pass is still recommended before this is treated as pixel-final. |
 
 No Window 2B (authentication) work was started in this session.
+
+## Window 2B handoff status
+
+Window 2B (authentication + server-backed sessions + mock OTP + authorization + protected routes) is complete. Implemented: password login and secondary phone+OTP login for players, password-only login for admins, server-backed sessions (hashed token, HttpOnly/SameSite=Lax/Secure-in-production cookie), server-side route protection for the player and admin areas via route groups, real logout/session revocation, and the five documented `/api/auth/*` routes. See SECURITY_AND_AUTH.md's "Window 2B implementation" and ARCHITECTURE.md's "Window 2B: auth module layout and route protection" sections for the full design; API_CONTRACTS.md records the exact request/response shapes actually implemented (including the `portal` field, a documented refinement of the original sketch).
+
+**Window 2A's visual design (colors, glass strength, ticket appearance) is unchanged and remains pending a dedicated visual-browser refinement pass — this window only wired real functional states (loading/error/success, real logout) into the existing presentation.** A future coding agent should not mistake this window's technical completion for visual sign-off.
+
+Inherited-state note: at the start of this session, `package.json`/`package-lock.json` had an uncommitted, unexplained addition of `@testing-library/react`, `@testing-library/user-event` and `jsdom` (fully installed in `node_modules`) that neither this window nor the prior Window 2A session had requested — Window 2A's own handoff explicitly recorded these as deliberately not installed. Its origin is unknown (not caused by any command run in this session). It was stashed rather than discarded (`git stash list` retains it) and `node_modules` was resynced to the committed lockfile; auth testing did not need a DOM. Also found: `src/components/dev/design-showcase.tsx`, committed by the user as part of a `phase-2A` commit between sessions, was missing from the working-tree filesystem for reasons unrelated to any command in this session; it was restored from git (`git restore`) with no content change.
+
+Window 3 (Player Home + Markets + Market Timing UX + Results) was not started.
+
+## Verification record — 2026-09-06 (Window 2B)
+
+| Check | Result |
+| --- | --- |
+| `npm.cmd run typecheck` | PASS |
+| `npm.cmd run lint` | PASS |
+| `npm.cmd test` | PASS; 61 tests across ten files (52 prior + 9 new pure-logic: `session-token.test.ts`, `auth-validators.test.ts`, `same-origin.test.ts`) |
+| `npm.cmd run test:integration` | PASS; 31 tests across two files (6 prior foundation + 25 new in `auth.integration.ts`, all against a disposable MongoDB replica set) |
+| `npm.cmd run build` | PASS; all five `/api/auth/*` routes and both protected areas registered |
+| `git diff --check` | PASS; no whitespace errors |
+| Manual HTTP/E2E verification | PASS — see below |
+
+Manual verification used a second disposable local MongoDB replica set (never the user's configured `.env`/database) plus a real `next dev` process and `curl` with a cookie jar. Exercised: public `/login` and `/admin/login` (200); unauthenticated `/` and `/admin` (307 to the correct login page); unauthenticated `/api/auth/me` (401); wrong password, admin-credential-via-player-portal, player-credential-via-admin-portal and disabled-user login attempts (all rejected with the documented codes); correct player and admin logins (session cookie issued, confirmed `HttpOnly`); authenticated `/api/auth/me`; authenticated cross-role visits to `/`, `/admin`, `/login` and `/admin/login` (all redirected to the correct area, no loops); logout followed by a 401 `/me` and a redirect back to login; the full OTP request → (dev-only) code → verify → session cycle, replaying the same consumed code (rejected), and an unregistered/disabled/admin phone all producing the identical generic response; a cross-origin `Origin` header on `POST /api/auth/login` (rejected 403). All temporary QA scripts, the disposable database, and the second dev server were removed/stopped afterward.

@@ -102,3 +102,17 @@ List routes use opaque cursor/limit pagination, stable timestamp plus _id orderi
 | admin read lists / settings / audit | Authorized filters and pagination | Redacted DTOs only; no mutation of historical rows from read views. |
 
 `entryInput` is `{entryMethod:'JODI', numbers:string[]}`, `{entryMethod:'CROSSING', digits:string}`, or `{entryMethod:'COPY_PASTE', rawInput:string, palti:boolean}`. Common stakeRupees applies to every normalized selection. Browser totals/counts/balance/status/payout/edit eligibility are not accepted as authority. Idempotency scope includes authenticated user and operation; compare a canonical request fingerprint or the stored request to reject key reuse with a different payload. Future financial transaction keys can be `BET_PLACE:<betId>`, `BET_EDIT:<betId>:<version>`, `WIN:<betId>`, and withdrawal ID plus transition.
+
+## Window 2B — implemented Auth contract
+
+The five auth routes above are now real route handlers (`src/app/api/auth/**/route.ts`), all cookie-authenticated, all returning `{data:...}` or `{error:{code,message}}` per the conventions above. One deliberate, documented refinement versus the original sketch: **login takes an explicit `portal`** (`"PLAYER" | "ADMIN"`) rather than inferring shell access purely from the account's stored role — Window 2B's brief required a credential for one portal to fail outright against the other, not silently authenticate into the wrong shell. See SECURITY_AND_AUTH.md's "Window 2B implementation" section for the full session/OTP/CSRF design; this section only records request/response shapes.
+
+| Route | Request body | 200/201 `data` | Notable error codes |
+| --- | --- | --- | --- |
+| `POST /api/auth/login` | `{portal: "PLAYER"\|"ADMIN", loginId, password}` | `{user: PublicUser}` + sets session cookie | `INVALID_CREDENTIALS` (401, also covers missing user and wrong portal), `USER_DISABLED` (403) |
+| `POST /api/auth/otp/request` | `{phone}` | `{requestId, message}` (`message` is always the same generic acknowledgement); `devCode` also present only when `NODE_ENV==="development"` | — (always 200; ineligible phones get a decoy `requestId` instead of an error) |
+| `POST /api/auth/otp/verify` | `{requestId, code}` | `{user: PublicUser}` + sets session cookie | `INVALID_OTP` (422 — covers unknown/expired/consumed/attempts-exceeded/wrong code identically) |
+| `POST /api/auth/logout` | none (cookie only) | `{loggedOut: true}` + clears session cookie | none; idempotent even with no/invalid cookie |
+| `GET /api/auth/me` | none (cookie only) | `{user: PublicUser}` | `UNAUTHENTICATED` (401 — also covers a disabled/deleted user's stale cookie) |
+
+`PublicUser` is `{id, role, loginId, name, phone, email, status}` (`src/modules/users/services/public-user.ts`) — the only shape ever sent to a browser; a hydrated Mongoose document (with `passwordHash`, even when explicitly `.select("+passwordHash")`ed for verification) is never spread into a response. All four state-changing routes reject a request whose `Origin` header doesn't match the request's own origin (`src/lib/http/same-origin.ts`); `GET /me` is read-only and exempt. Zod validation failures on any route return `400 INVALID_INPUT` before reaching the domain service.

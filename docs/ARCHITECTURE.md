@@ -266,3 +266,33 @@ Mongoose is the single ODM; Zod validates inputs/configuration; Luxon handles ma
 References checked for implementation: [Mongoose transactions](https://mongoosejs.com/docs/transactions.html), [MongoDB transactions](https://www.mongodb.com/docs/manual/core/transactions/), [Node crypto](https://nodejs.org/api/crypto.html). These technical references do not change frozen product rules.
 
 The separate integration suite uses mongodb-memory-server-core to start a disposable local replica set and verify real unique indexes, seed reruns, admin credentials and multi-document rollback/commit. Unit tests do not need MongoDB or a binary download. The integration dependency is test-only and does not provision application infrastructure.
+
+## Window 2B: auth module layout and route protection
+
+`modules/auth` gained the service/validator layers the target structure at the top of this document anticipated, all thin and reused rather than duplicated per route:
+
+```text
+modules/auth/
+  config.ts                 # cookie name, session duration, OTP expiry/attempts/cooldown — no secrets, importable by client code too
+  services/
+    session.service.ts      # token generate/hash, createSession, findActiveSessionUser, revokeSessionByToken, revokeAllUserSessions
+    login.service.ts         # loginWithPassword — shared by both portals, server enforces the role match
+    otp.service.ts           # requestPlayerOtp, verifyPlayerOtp
+  validators/auth-input.ts   # Zod: loginRequestSchema, otpRequestSchema, otpVerifySchema
+  models/, providers/         # unchanged from Window 1
+```
+
+`lib/auth/session.ts` is the framework-coupled layer above it — `next/headers` cookies, `next/server` cookie writes, and the reusable `getCurrentUser`/`requireAuthenticatedUser`/`requirePlayer`/`requireAdmin` primitives — kept separate from `modules/auth` so the domain services stay framework-agnostic and directly reusable from the integration test suite and future scripts. `lib/http/same-origin.ts` and `lib/api/handler.ts` are small, deliberately shared (not per-route) building blocks: the former is the CSRF/same-origin check, the latter gives every route handler identical Zod/DomainError-to-JSON translation instead of five copies of the same try/catch.
+
+Route handlers under `src/app/api/auth/**/route.ts` stay thin per CODEX_RULES: parse with Zod, `connectDatabase()`, call one domain service, shape the response — no password/session/Mongo logic lives in a route file.
+
+Protected areas use Next.js route groups specifically so the public login pages cannot be caught by their sibling protected layout:
+
+```text
+src/app/(player)/layout.tsx, page.tsx   → "/"        (auth-checked; group folder is invisible in the URL)
+src/app/login/page.tsx                  → "/login"   (public; NOT inside the (player) group)
+src/app/admin/(protected)/layout.tsx, page.tsx → "/admin"        (auth-checked)
+src/app/admin/login/page.tsx                   → "/admin/login" (public; a sibling of (protected), not inside it)
+```
+
+A layout nested directly under `admin/` would also wrap `admin/login`, risking a redirect loop; the `(protected)` group avoids that entirely rather than special-casing the login path inside the guard.
