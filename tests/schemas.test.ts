@@ -81,7 +81,7 @@ describe("canonical schemas", () => {
     round.resultDeclaredAt = round.opensAt; await expect(round.validate()).rejects.toThrow();
   });
   it("requires withdrawal payment details and rejection reason", async () => {
-    const withdrawal = new Withdrawal({ userId, clientRequestId: "w-1", method: "UPI", paymentDetails: { upiId: "player@bank" }, amountPaise: 100, requestedAt: new Date() });
+    const withdrawal = new Withdrawal({ userId, clientRequestId: "w-1", method: "UPI", paymentDetails: { upiId: "player@bank" }, destinationSummary: "pl••@bank", amountPaise: 100, requestedAt: new Date() });
     await withdrawal.validate(); withdrawal.status = "REJECTED";
     await expect(withdrawal.validate()).rejects.toThrow();
     withdrawal.rejectionReason = "Requested details need correction"; withdrawal.decidedAt = new Date(); withdrawal.decidedByAdminId = userId;

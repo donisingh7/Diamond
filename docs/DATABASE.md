@@ -346,13 +346,15 @@ userId + editedAt
 ```text
 _id
 userId
+clientRequestId          # client UUID; idempotency key
 amountPaise
 
 method:
   BANK
   UPI
 
-paymentDetails
+paymentDetails           # select:false — sensitive; written once, never read on player paths
+destinationSummary       # pre-masked, non-sensitive ("HDFC Bank ••••1234" / "ra••@okhdfc") — the only destination string serialised
 
 status:
   PENDING
@@ -363,7 +365,7 @@ status:
 rejectionReason?
 
 requestedAt
-decidedAt?
+decidedAt?               # generic decision timestamp; DTO maps it onto cancelledAt / approvedAt / rejectedAt
 decidedByAdminId?
 
 timestamps
@@ -372,8 +374,9 @@ timestamps
 Indexes:
 
 ```text
-userId + createdAt
+userId + createdAt (desc)
 status + requestedAt
+userId + clientRequestId  (unique)   # request idempotency backstop
 ```
 
 ---
@@ -487,7 +490,7 @@ There are exactly twelve primary collections. Every model is under its owning mo
 | marketRounds | Unique marketId/businessDate, actual Date instants, result declaration metadata and settlement summary. Result string rejects number coercion. |
 | bets | Unique publicRef; unique userId/clientRequestId; unique nonempty normalized selections, metadata shape matching method, validated count/total, immutable payout snapshot and publicRef. Domain version is distinct from Mongoose __v. |
 | betRevisions | Full composition snapshots; successive from/to versions; wallet delta is before total minus after total. Unique betId/toVersion and added unique userId/editRequestId. |
-| withdrawals | Added clientRequestId and unique userId/clientRequestId for retries. BANK uses accountHolderName/accountNumber/ifsc with optional bankName; UPI uses upiId. Sensitive paymentDetails excluded from ordinary queries. Preserve account numbers as strings. |
+| withdrawals | Added clientRequestId and unique userId/clientRequestId for retries. BANK uses accountHolderName/accountNumber/ifsc with optional bankName; UPI uses upiId. Sensitive paymentDetails excluded from ordinary queries. Preserve account numbers as strings. Window 5A added `destinationSummary` (safe pre-masked destination label; keeps `paymentDetails` out of every read/DTO path), bounded lengths on the paymentDetails strings, and `immutable` on the request-time fields; no index change. The duplicated `confirmAccountNumber` a BANK request carries is equality-checked and never persisted (`strict:"throw"` sub-schema is the backstop). At-rest encryption of `paymentDetails` is future production hardening, not part of the prototype. |
 | auditLogs | before/after maps are flexible storage only; future service must allowlist values, remove secrets and tag subjectUserId on every player-associated record for complete purge. |
 | platformSettings | Unique `key = platform` plus single allowed key provides singleton strategy. Initial rate 90 is in seed data, never settlement code. |
 

@@ -379,3 +379,86 @@ Window 4A1/4A2/4A3:
   non-owned bet).
 - success is `200` with `{ data: ... }` (not `201`), matching every other route here, and
   carries `serverNow`.
+
+## Window 5A - implemented player withdrawal contract
+
+Three route files (`src/app/api/withdrawals/route.ts` - `GET` + `POST`,
+`src/app/api/withdrawals/[id]/route.ts` - `GET`, `src/app/api/withdrawals/[id]/cancel/route.ts`
+- `POST`). All `apiRoute`-wrapped with the shared `{data:...}` / `{error:{code,message}}` shape,
+all requiring an **ACTIVE PLAYER** session via `requirePlayer()` (anonymous -> `401
+UNAUTHENTICATED`; **ADMIN** -> `403 FORBIDDEN` - PLAYER-only, not widened; a disabled/deleted
+user's stale cookie is rejected by `findActiveSessionUser`), all `export const dynamic =
+"force-dynamic"`. Identity is always the authenticated session - **no `userId` is accepted from
+the client**. Every response carries `serverNow` (ISO-8601). The `GET`s are exempt from the
+same-origin check (matching `GET /api/auth/me`); both `POST`s require a trusted `Origin` (`403`
+on mismatch).
+
+The roadmap sequences "Withdrawals" under Window 5; only the **player** backend ships here -
+**no withdrawal UI, and no `/api/admin/withdrawals` approve/reject routes** (those are Window
+6A; the reusable domain primitives exist but are not routed).
+
+| Route | Request | `200` `data` | Notable errors |
+| --- | --- | --- | --- |
+| `POST /api/withdrawals` | discriminated on `method`, each branch `.strict()`: `{ method:"UPI", amountPaise: int>0, clientRequestId: uuid, upi:{ upiId } }` / `{ method:"BANK", amountPaise, clientRequestId, bank:{ accountHolderName, accountNumber (6-20 digits), confirmAccountNumber, ifsc (11-char), bankName? } }` | `{ withdrawal: WithdrawalDTO, wallet: WalletView, serverNow }` | `401`, `403` (also cross-origin, ADMIN), `INVALID_INPUT` (400 - bad shape, non-UUID id, **account-number confirmation mismatch**, stray/cross-method field), `INVALID_AMOUNT` (422 - below Rs 1), `MONEY_OUT_OF_RANGE` (422 - beyond safe integer), `INSUFFICIENT_BALANCE` (422 - amount exceeds available balance = the maximum), `DUPLICATE_REQUEST` (409 - `clientRequestId` reused with a different payload) |
+| `GET /api/withdrawals` | `?limit=` 1-50 (default 20), `?cursor=` opaque, `?status=PENDING\|APPROVED\|REJECTED\|CANCELLED` (`.strict()`) | `{ withdrawals: WithdrawalDTO[], nextCursor: string \| null, serverNow }` | `401`, `403`, `INVALID_INPUT` (400 - bad limit / stray param / malformed cursor) |
+| `GET /api/withdrawals/[id]` | `[id]` = the withdrawal's 24-hex `id` handle (withdrawals have no public reference) | `{ withdrawal: WithdrawalDTO, serverNow }` | `401`, `403`, `WITHDRAWAL_NOT_FOUND` (404 - missing **or** non-owned **or** malformed id, indistinguishable) |
+| `POST /api/withdrawals/[id]/cancel` | no body (`.strict()` empty; a stray field is `400`) | `{ withdrawal: WithdrawalDTO, wallet: WalletView, serverNow }` | `401`, `403` (also cross-origin), `WITHDRAWAL_NOT_FOUND` (404 - missing/non-owned), `WITHDRAWAL_NOT_PENDING` (409 - already APPROVED/REJECTED) |
+
+`WithdrawalDTO` =
+
+```text
+{ id, method: "BANK"|"UPI", amountPaise, status: "PENDING"|"APPROVED"|"REJECTED"|"CANCELLED",
+  destination: { method, summary: "HDFC Bank ••••1234" | "ra••@okhdfcbank" },
+  rejectionReason: string | null, requestedAt: iso, decidedAt: iso | null,
+  cancelledAt: iso | null, approvedAt: iso | null, rejectedAt: iso | null,
+  createdAt: iso, updatedAt: iso }
+```
+
+- `id` is the withdrawal's own handle (consistent with the wallet / bet DTOs). **Never
+  serialized:** `userId`, `paymentDetails` (raw account number / IFSC / UPI id), `clientRequestId`,
+  `decidedByAdminId`, the ledger idempotency key, any sub-document Mongo `_id`.
+- `destination.summary` is a **pre-masked** label stored at request time; the raw
+  `paymentDetails` is never read on any player path. For BANK, all but the last four account
+  digits are masked. The duplicated `bank.confirmAccountNumber` must equal `bank.accountNumber`
+  and is **never stored**.
+- The schema keeps one generic `decidedAt`; the DTO maps it onto `cancelledAt` / `approvedAt` /
+  `rejectedAt` by status (and still returns it raw). `rejectionReason` is non-null only for a
+  REJECTED withdrawal.
+
+**Financial semantics.** `POST` atomically transfers `amountPaise` from available to reserved
+(`available -= X`, `reserved += X`), creates the `PENDING` withdrawal and appends one immutable
+`WITHDRAWAL_RESERVED` `walletTransactions` row - one Mongo transaction, no partial state. The
+maximum is the live available balance (`INSUFFICIENT_BALANCE` above it); the minimum is Rs 1
+(100 paise). `cancel` atomically transitions `PENDING -> CANCELLED`, returns the reserved money
+(`available += X`, `reserved -= X`) and appends one `WITHDRAWAL_RELEASED` row; the withdrawal is
+**not** deleted. Reserved funds cannot be bet, withdrawn again or admin-debited while PENDING.
+
+**Idempotency.** `clientRequestId` (client UUID) backed by the unique
+`withdrawals (userId, clientRequestId)` index. A retry with the same logical request (method +
+amount + destination) returns the **original** withdrawal - no second reserve, no duplicate
+ledger row. The same id with a conflicting payload is `409 DUPLICATE_REQUEST`. Two simultaneous
+identical requests resolve to one withdrawal / one reserve / one ledger row. Cancellation is
+deterministically idempotent on the withdrawal's own state plus the fixed
+`WITHDRAWAL_RELEASED:<withdrawalId>` ledger key: an already-CANCELLED withdrawal returns its DTO
+with **no** second release, a retried or concurrent cancel releases the reserved money **exactly
+once**, and reserved balance never goes negative.
+
+**Future admin (not routed here).** `approveWithdrawalByAdmin` (`PENDING -> APPROVED`, `reserved
+-= X` only, `WITHDRAWAL_APPROVED` row, no real payout) and `rejectWithdrawalByAdmin` (`PENDING ->
+REJECTED` + reason, `available += X`, `reserved -= X`, `WITHDRAWAL_RELEASED` row) exist as
+transaction-scoped domain services for Window 6A's `POST /api/admin/withdrawals/:id/approve` /
+`:id/reject`. No admin route, UI or audit wiring is added in Window 5A.
+
+Deliberate, documented refinements of the "withdrawal request / cancel" sketch rows above,
+consistent with Windows 4A1-4A4:
+
+- the request carries **`amountPaise`** (integer paise), not `amountRupees` decimal text -
+  integer paise end to end; the Rs 1 minimum and safe-integer ceiling are enforced by the
+  service (`assertWithdrawalAmount`), so a below-minimum amount is `INVALID_AMOUNT` (422), not a
+  generic 400;
+- payment details are **grouped** under `bank` / `upi` (mirroring the stored `paymentDetails`
+  sub-document) rather than flat, and BANK adds `confirmAccountNumber` (validated, never stored);
+- cancellation is `POST /api/withdrawals/[id]/cancel` (the sketch's form), success is `200` with
+  `{ data: { withdrawal, wallet, serverNow } }` (not `201`), matching every other route here;
+- `[id]` is the Mongo `_id` handle - withdrawals have no human public reference - and knowing an
+  id never grants access (`404 WITHDRAWAL_NOT_FOUND` for a non-owned withdrawal).

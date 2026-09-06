@@ -232,7 +232,7 @@ This repository was an existing minimal Next.js 16 App Router starter, not a new
 | `modules/markets` | Permanent market and daily round models. `lib/dates/market-time.ts` is the sole round-time calculation implementation. |
 | `modules/betting` | Canonical bet and revision models, input discriminated union, engine contracts. Engines and mutation services remain Window 4. |
 | `modules/wallet` | Wallet and delta-ledger models, future sole-writer `WalletService.applyMovement` contract. |
-| `modules/withdrawals` | Withdrawal persistence; reservation/decision/cancellation services remain Window 5/6. |
+| `modules/withdrawals` | Withdrawal persistence + the **player** lifecycle (request / own list / detail / cancel) and the transaction-scoped **admin approve / reject primitives** (Window 6A routes those). See "Window 5A". |
 | `modules/settlement` | Batch service contract; implementation in Window 7. No simulated settlement. |
 | `modules/audit` | Canonical audit model; future service must allowlist/redact snapshots and tag player associations. |
 | `modules/settings` | Singleton model, seed defaults and non-overwriting seed service. |
@@ -798,3 +798,130 @@ are reused verbatim - no synonymous codes.
 -> `{ data: { bet, serverNow } }`. All `export const dynamic = "force-dynamic"`; an ADMIN
 session is `403 FORBIDDEN`, anonymous `401 UNAUTHENTICATED`; no `userId` is accepted from the
 client on any of them.
+
+## Window 5A: player withdrawal lifecycle
+
+Backend / financial domain only. The player withdrawal lifecycle — request, own list / detail,
+player cancellation while PENDING — plus the transaction-scoped **admin approve / reject
+primitives** that Window 6A will route. **No withdrawal UI, no admin withdrawal routes, no admin
+dashboard, no real payout / Razorpay / bank / UPI integration, no settlement, no visual
+redesign.** Window 2A's visual design remains pending a dedicated Codex pass; this window built
+no UI.
+
+### Module layout
+
+```text
+lib/errors/domain-error.ts                     # + WITHDRAWAL_NOT_FOUND (404); WITHDRAWAL_NOT_PENDING (409) already existed
+modules/withdrawals/
+  models/
+    withdrawal.model.ts                        # + destinationSummary (safe, required, immutable),
+                                               #   bounded paymentDetails strings, immutable request fields,
+                                               #   WithdrawalRecord / WithdrawalDoc / WithdrawalRow types.
+                                               #   Existing indexes unchanged: (userId, createdAt desc),
+                                               #   (status, requestedAt), UNIQUE (userId, clientRequestId).
+  validators/
+    withdrawal-input.ts                        # createWithdrawalSchema (Zod discriminated union on method,
+                                               #   each branch .strict()); BANK carries confirmAccountNumber
+                                               #   (equality-checked, never stored); toPaymentDetails,
+                                               #   buildDestinationSummary; withdrawalsListQuerySchema; cancelWithdrawalSchema
+  services/
+    withdrawal.service.ts                      # requestWithdrawal, listPlayerWithdrawals, getPlayerWithdrawalDetail,
+                                               #   resolveOwnedWithdrawal, cancelWithdrawal; approveWithdrawalByAdmin /
+                                               #   rejectWithdrawalByAdmin (FUTURE ADMIN - not routed); toWithdrawalDTO,
+                                               #   assertWithdrawalAmount, withdrawal cursor codec, ledger-key builders (server-only)
+src/app/api/withdrawals/route.ts               # GET (own list) + POST (create) - ACTIVE PLAYER; POST same-origin; force-dynamic
+src/app/api/withdrawals/[id]/route.ts          # GET (own detail) - ACTIVE PLAYER; force-dynamic
+src/app/api/withdrawals/[id]/cancel/route.ts   # POST (cancel own PENDING) - ACTIVE PLAYER; same-origin; force-dynamic
+```
+
+`modules/wallet/services/wallet.service.ts` is consumed unchanged - the withdrawal service
+reuses `reserveInSession` (`WITHDRAWAL_RESERVED`), `releaseReservedInSession`
+(`WITHDRAWAL_RELEASED`), `finalizeReservedInSession` (`WITHDRAWAL_APPROVED`), `createPlayerWallet`
+and `getWalletView` verbatim. The wallet never imports withdrawals (`Withdrawal -> Wallet`,
+`referenceType: "WITHDRAWAL"` / `referenceId` the generic link).
+
+### Layering
+
+```text
+API (thin route)  ->  Zod (createWithdrawalSchema / withdrawalsListQuerySchema)  ->  WithdrawalService.*
+      |
+wallet transaction primitives (reserve / release / finalize, Window 4A2)
+      |
+one Mongo transaction (withTransaction): wallet delta + ledger row + native withdrawal insert / CAS status update
+```
+
+### `requestWithdrawal(input, options?)`
+
+`input = { userId, request }` (`request` already parsed by `createWithdrawalSchema`). `options`
+is a test seam only - `{ clock?, afterWalletMovement? }`.
+
+1. **Validate the amount** - `assertWithdrawalAmount` (`INVALID_AMOUNT` below Rs 1,
+   `MONEY_OUT_OF_RANGE` beyond safe-integer precision). Derive `destinationSummary` (masked) and
+   `paymentDetails` (the duplicated `confirmAccountNumber` is dropped).
+2. **Existing-success idempotency recovery FIRST** - `Withdrawal.findOne({ userId, clientRequestId })`.
+   A hit whose `(method, amountPaise, destinationSummary)` matches returns the ORIGINAL
+   withdrawal with no second reserve / ledger row; a conflicting payload is `DUPLICATE_REQUEST`.
+3. **Ensure a Rs 0 wallet** (`createPlayerWallet` - never grants funds), pre-allocate the
+   withdrawal `_id`, build + `.validate()` a throwaway `new Withdrawal({...})` so the schema
+   `pre("validate")` invariants (method <-> paymentDetails shape) run before the native insert.
+4. **One `withTransaction`:** `reserveInSession({ amountPaise, idempotencyKey:
+   WITHDRAWAL_RESERVED:<withdrawalId>, referenceType: "WITHDRAWAL", referenceId })` - fails
+   `INSUFFICIENT_BALANCE` when `available < amount` (this IS the "maximum = available balance"
+   rule) -> native `Withdrawal.collection.insertOne` of the `PENDING` document. The reserve
+   precedes the insert so an insert failure demonstrably rolls the wallet back. A native insert
+   is used for the same reason as bet placement - a Mongoose doc created inside
+   `connection.transaction()` is reset on retry, and resetting its `strict:"throw"`
+   `paymentDetails` sub-document throws.
+5. **Lost `(userId, clientRequestId)` race** - the loser's insert collides on the unique index
+   inside its aborted transaction (reserve included); recover the winner outside it.
+
+### Terminal transitions - `cancelWithdrawal` / `approveWithdrawalByAdmin` / `rejectWithdrawalByAdmin`
+
+All three share `applyTerminalTransition`: one `withTransaction` that re-reads the withdrawal
+**in-session**, moves the wallet through a Window 4A2 primitive, then flips the status with a
+compare-and-set `Withdrawal.collection.updateOne({ _id, status: "PENDING" }, { $set: { status,
+decidedAt, ... } })`. `matchedCount !== 1` (a concurrent transition already won) throws
+`WITHDRAWAL_NOT_PENDING`, which aborts the whole transaction - the wallet movement rolls back
+with it. An in-session read already showing the target status means an identical racing
+transition committed first: return without moving money again. After a lost race the caller
+re-reads and returns success **only when the withdrawal actually reached the target state**; a
+forced-rollback failure leaves it PENDING and rethrows.
+
+| Transition | Who | Guard -> new status | Wallet move | Ledger key | Notes |
+| --- | --- | --- | --- | --- | --- |
+| cancel | player, own | `PENDING -> CANCELLED` | `releaseReservedInSession` (`available += X`, `reserved -= X`) | `WITHDRAWAL_RELEASED:<id>` | already-CANCELLED -> DTO, no re-release; APPROVED/REJECTED -> `WITHDRAWAL_NOT_PENDING` (409); not deleted |
+| reject | future admin (primitive, **not routed**) | `PENDING -> REJECTED` + reason | `releaseReservedInSession` | `WITHDRAWAL_RELEASED:<id>` | reason required (`INVALID_INPUT` if blank); already-REJECTED -> DTO |
+| approve | future admin (primitive, **not routed**) | `PENDING -> APPROVED` | `finalizeReservedInSession` (`reserved -= X` only) | `WITHDRAWAL_APPROVED:<id>` | available unchanged; no real payout; already-APPROVED -> DTO |
+
+cancel and reject share `WITHDRAWAL_RELEASED:<id>` - safe because a withdrawal has exactly one
+terminal transition (the CAS on `status: "PENDING"`), so only one can ever win, and the shared
+unique ledger key is an extra double-release guard.
+
+### DTO / masking
+
+`toWithdrawalDTO` returns `{ id, method, amountPaise, status, destination: { method, summary },
+rejectionReason, requestedAt, decidedAt, cancelledAt, approvedAt, rejectedAt, createdAt,
+updatedAt }`. `summary` is the stored pre-masked `destinationSummary`; `paymentDetails` is
+**never** read on any player path. The schema's single generic `decidedAt` is mapped onto the
+status-specific `cancelledAt` / `approvedAt` / `rejectedAt` (and still returned raw). Never
+serialised: `userId`, `paymentDetails`, `clientRequestId`, `decidedByAdminId`, the ledger
+idempotency key, sub-document `_id`.
+
+### Errors
+
+Added `WITHDRAWAL_NOT_FOUND` (404) to `lib/errors/domain-error.ts`. `WITHDRAWAL_NOT_PENDING`
+(409), `INSUFFICIENT_BALANCE` (422), `INVALID_AMOUNT` (422), `MONEY_OUT_OF_RANGE` (422),
+`DUPLICATE_REQUEST` (409), `FORBIDDEN` (403), `UNAUTHENTICATED` (401), `INVALID_INPUT` (400)
+already existed and are reused verbatim - no synonymous codes.
+
+### Routes
+
+`GET /api/withdrawals` - `requirePlayer()` -> `withdrawalsListQuerySchema.parse` ->
+`listPlayerWithdrawals` -> `{ data: { withdrawals, nextCursor, serverNow } }`.
+`GET /api/withdrawals/[id]` - `requirePlayer()` -> `getPlayerWithdrawalDetail` ->
+`{ data: { withdrawal, serverNow } }`. `POST /api/withdrawals` and
+`POST /api/withdrawals/[id]/cancel` - `isTrustedOrigin` (same-origin, `403` on mismatch) ->
+`requirePlayer()` -> Zod -> service -> `{ data: { withdrawal, wallet, serverNow } }`. All
+`export const dynamic = "force-dynamic"`; an ADMIN session is `403 FORBIDDEN`, anonymous
+`401 UNAUTHENTICATED`; no `userId` is accepted from the client. A non-owned or missing
+withdrawal is an indistinguishable `404 WITHDRAWAL_NOT_FOUND` on detail and cancel.

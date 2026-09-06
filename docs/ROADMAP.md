@@ -559,3 +559,159 @@ database and the temporary script were stopped and removed afterward.
 No live `npm run db:check` / `npm run db:seed` against the user's configured database was run in
 this window; all database verification used disposable replica sets. Window 2A visual quality
 remains pending Codex visual-browser refinement.
+
+## Window 5A handoff status
+
+Window 5A (player withdrawal lifecycle backend) is complete. **Backend / financial domain
+only.** See ARCHITECTURE.md's "Window 5A" section for the design, DOMAIN_RULES.md's "Window 5A
+implementation clarification" for the frozen-rule mapping, API_CONTRACTS.md's "Window 5A -
+implemented player withdrawal contract" for exact shapes, and DATABASE.md's `withdrawals`
+changelog row for the schema delta.
+
+Implemented:
+
+- `modules/withdrawals/services/withdrawal.service.ts` -
+  - `requestWithdrawal(input, options?)` -> `{ withdrawal, wallet, serverNow }`. Amount guard
+    (`INVALID_AMOUNT` below Rs 1 / `MONEY_OUT_OF_RANGE`), existing-success `clientRequestId`
+    idempotency recovery **first** (logical request = method + amount + destination; conflict ->
+    `DUPLICATE_REQUEST`), `createPlayerWallet` (Rs 0, never grants funds), one `withTransaction`
+    doing `reserveInSession` (`WITHDRAWAL_RESERVED:<id>`, `available -= X` / `reserved += X`,
+    `INSUFFICIENT_BALANCE` when `available < X` = the "maximum = available" rule) -> native
+    `Withdrawal.collection.insertOne` of the PENDING doc; lost `(userId, clientRequestId)` race
+    recovered outside the aborted transaction.
+  - `cancelWithdrawal(input, options?)` -> `{ withdrawal, wallet, serverNow }`. Player-owned,
+    `PENDING -> CANCELLED`, `releaseReservedInSession` (`WITHDRAWAL_RELEASED:<id>`,
+    `available += X` / `reserved -= X`); already-CANCELLED -> DTO with **no** second release;
+    APPROVED/REJECTED -> `WITHDRAWAL_NOT_PENDING`; retried / concurrent cancel releases exactly
+    once (deterministic on state + the fixed ledger key), reserved never negative; the
+    withdrawal is **not** deleted.
+  - `listPlayerWithdrawals` (own only, newest first, bounded `limit` 1-50 default 20, opaque
+    `(createdAt, _id)` cursor, optional `status` filter), `getPlayerWithdrawalDetail` (own,
+    24-hex id, `WITHDRAWAL_NOT_FOUND` for missing/non-owned/malformed - indistinguishable),
+    `resolveOwnedWithdrawal`, `toWithdrawalDTO` (masked `destination.summary`; generic
+    `decidedAt` mapped onto `cancelledAt` / `approvedAt` / `rejectedAt`; no `userId` /
+    `paymentDetails` / `clientRequestId` / `decidedByAdminId` / ledger key), `assertWithdrawalAmount`,
+    `encode/decodeWithdrawalCursor` / `clampWithdrawalListLimit`, `withdrawalReserveKey` /
+    `withdrawalReleaseKey` / `withdrawalApproveKey`.
+  - **FUTURE ADMIN (not routed in 5A):** `approveWithdrawalByAdmin` (`PENDING -> APPROVED`,
+    `finalizeReservedInSession` - `reserved -= X` only, `WITHDRAWAL_APPROVED:<id>`, available
+    unchanged, no real payout) and `rejectWithdrawalByAdmin` (`PENDING -> REJECTED` + reason,
+    `releaseReservedInSession`, `WITHDRAWAL_RELEASED:<id>`). Both share `applyTerminalTransition`
+    (in-session re-read -> wallet primitive -> CAS `updateOne({ status: "PENDING" })`;
+    `matchedCount 0` aborts the whole transaction). Window 6A routes these.
+- `modules/withdrawals/validators/withdrawal-input.ts` - `createWithdrawalSchema` (Zod
+  discriminated union on `method`, each branch `.strict()`; `amountPaise: int>0`,
+  `clientRequestId: z.uuid()`; BANK `bank:{ accountHolderName, accountNumber /^\d{6,20}$/,
+  confirmAccountNumber, ifsc /^[A-Z]{4}0[A-Z0-9]{6}$/, bankName? }` with a `.refine` equality
+  check on the confirmation; UPI `upi:{ upiId }` syntactic check, no external call),
+  `toPaymentDetails` (drops the confirmation), `buildDestinationSummary` (mask),
+  `withdrawalsListQuerySchema`, `cancelWithdrawalSchema`.
+- `src/app/api/withdrawals/route.ts` - `GET` (own list) + `POST` (create).
+  `src/app/api/withdrawals/[id]/route.ts` - `GET` (own detail).
+  `src/app/api/withdrawals/[id]/cancel/route.ts` - `POST` (cancel own PENDING). All ACTIVE
+  PLAYER, `force-dynamic`; both `POST`s same-origin; no `userId` from the client.
+- `lib/errors/domain-error.ts` - added `WITHDRAWAL_NOT_FOUND` (404). `WITHDRAWAL_NOT_PENDING`
+  (409) already existed and is now used.
+- `withdrawal.model.ts` - added `destinationSummary` (safe, required, immutable), bounded
+  `paymentDetails` string lengths, `immutable` on the request-time fields, and
+  `WithdrawalRecord` / `WithdrawalDoc` / `WithdrawalRow` type-only exports. **No index change**
+  (the three existing indexes, including UNIQUE `(userId, clientRequestId)`, are unchanged).
+
+Deliberately **not** done (out of window): any withdrawal / wallet UI, `/api/admin/withdrawals`
+approve/reject routes, admin dashboard, real payout / Razorpay / UPI payout / bank API,
+settlement, result declaration, betting UI, any Window 2A visual redesign. `bets`,
+`betRevisions`, settlement collections and `WIN_CREDIT` are untouched. No at-rest encryption of
+`paymentDetails` was added - it is documented as future production hardening.
+
+**Window 2A's visual design remains pending a dedicated Codex visual-browser refinement pass.
+This window built no UI and attempted no visual redesign.**
+
+## Verification record - 2026-09-07 (Window 5A)
+
+| Check | Result |
+| --- | --- |
+| `npm.cmd run typecheck` | PASS; strict TypeScript incl. new service / validator / routes / tests |
+| `npm.cmd run lint` | PASS; no warnings |
+| `npm.cmd test` | PASS; 210 tests across 16 files (190 prior + 20 new in `withdrawal.test.ts`; `schemas.test.ts` withdrawal fixture updated for the new required `destinationSummary`) |
+| `npm.cmd run test:integration` | PASS; 175 tests across 8 files (145 prior + 30 new in `withdrawal.integration.ts`) against a disposable MongoDB 8.2.6 replica set |
+| `npm.cmd run build` | PASS; `/api/withdrawals`, `/api/withdrawals/[id]`, `/api/withdrawals/[id]/cancel` registered as dynamic route handlers |
+| `git diff --check` | PASS; no whitespace errors (LF->CRLF advisories only, matching repo convention) |
+| Manual HTTP/E2E verification | PASS - see below |
+
+New unit coverage (`withdrawal.test.ts`): `createWithdrawalSchema` accepts BANK (with/without
+bankName) and UPI, upper-cases IFSC, lower-cases UPI id, rejects a confirmation mismatch, a
+malformed IFSC / account number / UPI id, a missing / non-UUID `clientRequestId`, a
+non-positive / fractional amount, and every `.strict()` violation (`userId`, `status`,
+`destinationSummary`, cross-method payload, stray sub-key); `toPaymentDetails` drops the
+confirmation and omits an absent `bankName`; `buildDestinationSummary` masks BANK to the last
+four digits (default "Bank" prefix) and UPI to two handle chars + PSP; `withdrawalsListQuerySchema`
+default 20 / range `[1,50]` / rejected stray param / each status accepted; `cancelWithdrawalSchema`
+empty-body only; `assertWithdrawalAmount` (100 ok, 99 -> `INVALID_AMOUNT`, fractional / unsafe ->
+`MONEY_OUT_OF_RANGE`); ledger-key determinism + shape; withdrawal cursor `(createdAt, _id)`
+round-trip + malformed -> `INVALID_INPUT`; `clampWithdrawalListLimit`; `toWithdrawalDTO` maps
+`decidedAt` onto the status-specific field, sets `rejectionReason` only when REJECTED, and its
+key allow-list excludes `userId` / `paymentDetails` / `clientRequestId` / `decidedByAdminId` /
+`destinationSummary` / `__v`.
+
+New integration coverage (`withdrawal.integration.ts`, disposable replica set): **request
+success** - UPI and BANK create a PENDING withdrawal, move `available -> reserved` exactly, and
+write one `WITHDRAWAL_RESERVED` row with exact before/delta/after values, `referenceType:
+"WITHDRAWAL"`, `referenceId` and key `WITHDRAWAL_RESERVED:<id>`; `paymentDetails` stored once
+(never the `confirmAccountNumber`), response carries only a masked `destination.summary`; Rs 1
+(100 paise) accepted; the frozen Rs 1000 -> withdraw Rs 300 -> Rs 700 / Rs 300 example.
+**validation / guards** - confirmation mismatch rejected before any write; below Rs 1 ->
+`INVALID_AMOUNT` no writes; amount above available -> `INSUFFICIENT_BALANCE` no writes; reserved
+funds cannot be withdrawn again; a forced failure right after the reserve rolls the whole
+transaction back (no withdrawal, wallet and ledger unchanged). **idempotency** - a same-payload
+retry returns the original withdrawal with no second reserve; the same id + a different amount
+or a different method -> `DUPLICATE_REQUEST` with no second withdrawal/reserve; two concurrent
+identical requests -> one withdrawal / one reserve / one ledger row, both callers the same id.
+**concurrency** - Rs 100 available, two concurrent Rs 80 withdrawals -> one PENDING, one
+`INSUFFICIENT_BALANCE`, final `available 2000 / reserved 8000`, one withdrawal. **reads** - a
+player lists only their own; bounded newest-first `(createdAt, _id)` cursor pagination walks the
+whole history with no gaps or repeats; `status` filter narrows to PENDING / CANCELLED; max
+limit respected; malformed cursor -> `INVALID_INPUT`; detail is owner-only and a foreign /
+malformed / unknown id is an indistinguishable `WITHDRAWAL_NOT_FOUND`. **cancellation** -
+`PENDING -> CANCELLED` restores available and writes one `WITHDRAWAL_RELEASED` row with exact
+deltas and key; a second cancel is a no-op returning the CANCELLED withdrawal (one release
+total); two concurrent cancels release the reserved funds **exactly once**, reserved never
+negative, exactly one `WITHDRAWAL_RELEASED` row; an APPROVED / REJECTED withdrawal cannot be
+cancelled (`WITHDRAWAL_NOT_PENDING`); a forced failure right after the release rolls back
+(stays PENDING, still reserved, no release row); a foreign player cannot cancel it
+(`WITHDRAWAL_NOT_FOUND`). **future admin primitives** - approve -> APPROVED, reserved cleared,
+available UNCHANGED, one `WITHDRAWAL_APPROVED` row (deltas `available 0 / reserved -X`),
+`decidedByAdminId` stored; approve is idempotent (repeat returns APPROVED, one approved row);
+reject -> REJECTED with stored reason, funds released, one `WITHDRAWAL_RELEASED` row; reject
+requires a non-empty reason (`INVALID_INPUT`); a cancelled withdrawal can no longer be approved
+or rejected (mutually exclusive terminal transition); a forced failure right after the approve
+movement rolls back (stays PENDING). **scope guard** - a full withdrawal exercise writes no
+`bets` / `betRevisions`, no `WIN_CREDIT` / `BET_*` ledger rows, and no `marketRounds`.
+
+Manual HTTP verification used a **disposable** `mongodb-memory-server-core` replica set (seeded
+via `seedFoundation()`, then two ACTIVE players and one ACTIVE admin) plus a real `next dev` on
+port 3939 - the user's configured `.env` / database was never touched; the temporary driver
+(`scratchpad/verify-5a.ts`) was deleted before commit; account numbers, UPI ids, cookies and
+secrets were never printed. 31 automated assertions, all PASS: unauthenticated `GET` / `POST
+/api/withdrawals` -> `401`; player + admin password logins issuing `diamond_session` cookies; an
+ADMIN session on `GET` and `POST /api/withdrawals` -> `403`; `GET /api/admin/withdrawals` ->
+`404` (no admin route exists yet); `POST /api/wallet/mock-deposit` funding player 1; `POST
+/api/withdrawals` UPI Rs 300 -> `200` PENDING with a masked `destination.summary` and no
+`paymentDetails` / `userId`; `GET /api/wallet` -> `available 70000 / reserved 30000`; `GET
+/api/withdrawals` -> exactly the one row, no sensitive fields; `GET /api/withdrawals/<id>` ->
+`200`; a retry with the same `clientRequestId` + payload -> `200` same id and no second reserve;
+the same id with a different amount -> `409 DUPLICATE_REQUEST`; `POST
+/api/withdrawals/<id>/cancel` -> `200 CANCELLED` and wallet restored to `100000 / 0`; the retry
+cancel -> `200 CANCELLED` with the wallet unchanged; `GET /api/wallet/transactions` carrying
+exactly one `WITHDRAWAL_RESERVED` and one `WITHDRAWAL_RELEASED` row with no `idempotencyKey`;
+`POST /api/withdrawals` BANK valid -> `200` with a `•••• 1234` summary; an account-number
+confirmation mismatch -> `400 INVALID_INPUT`; a below-Rs 1 amount -> `422 INVALID_AMOUNT`; an
+amount over the balance -> `422 INSUFFICIENT_BALANCE`; a mismatched `Origin` on `POST
+/api/withdrawals` and on `.../cancel` -> `403`; the second player reading or cancelling the
+first player's withdrawal -> `404 WITHDRAWAL_NOT_FOUND`; a malformed `:id` -> `404`; and a final
+reconnect confirming zero `bets` / `betRevisions` / `WIN_CREDIT` and exactly two `withdrawals`
+rows. The dev server, the disposable database and the temporary script were stopped and removed
+afterward.
+
+No live `npm run db:check` / `npm run db:seed` against the user's configured database was run in
+this window; all database verification used disposable replica sets. Window 2A visual quality
+remains pending Codex visual-browser refinement.

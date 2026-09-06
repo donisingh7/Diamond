@@ -785,6 +785,59 @@ Maximum:
 available balance
 ```
 
+### Window 5A implementation clarification (no business rule changed)
+
+The frozen withdrawal rules above (BANK / UPI, the four states, request reserves
+available→reserved, player cancel only while PENDING, admin reject releases, admin approve
+finalises, ₹1 minimum, maximum = available balance, no real payout) are implemented as the
+**player** lifecycle plus reusable admin primitives. Nothing was altered.
+
+- **Request is one atomic transaction.** `requestWithdrawal` validates an ACTIVE PLAYER + the
+  Zod-checked request, ensures a ₹0 wallet, then in ONE Mongo transaction: `reserveInSession`
+  (`available -= X`, `reserved += X`, one immutable `WITHDRAWAL_RESERVED` ledger row) → native
+  insert of the `PENDING` `withdrawals` document. Any failure — below-min amount, insufficient
+  available balance, a write error — leaves **no** withdrawal, **no** wallet change and **no**
+  ledger row. The maximum is enforced by the reserve primitive (`INSUFFICIENT_BALANCE` when
+  `available < X`), not a product constant; the ₹1 minimum is `assertWithdrawalAmount`
+  (`INVALID_AMOUNT` below ₹1, `MONEY_OUT_OF_RANGE` beyond safe-integer precision).
+- **Reserved funds are inert.** They cannot fund a bet, another withdrawal or a normal admin
+  debit, and they stay reserved for the whole PENDING lifetime (the Window 4A2 available/reserved
+  split does this — no new mechanism).
+- **Every terminal transition is atomic and compare-and-set.** Cancel / reject / approve each
+  run one transaction that moves the wallet through a Window 4A2 primitive AND flips the status
+  with `updateOne({ status: "PENDING" }, …)`. `matchedCount 0` (a concurrent transition already
+  won) aborts the whole transaction, rolling the wallet movement back with it. There is never a
+  "withdrawal changed but wallet didn't", or the reverse.
+  - **cancel** (player, own PENDING only): `PENDING → CANCELLED`, `available += X`,
+    `reserved -= X`, one `WITHDRAWAL_RELEASED` row. The withdrawal is **not** deleted. An
+    already-CANCELLED withdrawal returns its DTO with no second release; APPROVED / REJECTED is
+    `WITHDRAWAL_NOT_PENDING` (409).
+  - **reject** (future admin — primitive only, NOT routed in 5A): `PENDING → REJECTED` + stored
+    reason, `available += X`, `reserved -= X`, one `WITHDRAWAL_RELEASED` row.
+  - **approve** (future admin — primitive only, NOT routed in 5A): `PENDING → APPROVED`,
+    `reserved -= X` only, available unchanged, one `WITHDRAWAL_APPROVED` row. No real bank/UPI
+    payout occurs.
+- **Idempotency.** The request carries a client UUID `clientRequestId`; a unique
+  `(userId, clientRequestId)` index is the backstop. A retry with the same logical request
+  (method + amount + destination) returns the ORIGINAL withdrawal — no second reserve, no
+  duplicate ledger row; a conflicting payload under the same id is `DUPLICATE_REQUEST` (409).
+  Two simultaneous identical requests resolve to one withdrawal / one reserve / one ledger row.
+  Cancellation idempotency is deterministic on the withdrawal's own state plus the deterministic
+  `WITHDRAWAL_RELEASED:<withdrawalId>` ledger key — a retried or raced cancel releases the
+  reserved money exactly once and reserved balance never goes negative.
+- **Ledger keys** follow the established `<TYPE>:<entityId>` scheme:
+  `WITHDRAWAL_RESERVED:<withdrawalId>` (request), `WITHDRAWAL_RELEASED:<withdrawalId>`
+  (cancel / reject — mutually exclusive, so the shared key is safe), `WITHDRAWAL_APPROVED:<withdrawalId>`
+  (approve). `referenceType` is `"WITHDRAWAL"`, `referenceId` the withdrawal `_id`.
+- **Sensitive payout details.** `withdrawals.paymentDetails` (account number / IFSC / UPI id) is
+  written once and `select: false`; player list / detail / cancel responses never read or
+  return it. Every response carries only a pre-masked `destination.summary`
+  (`"HDFC Bank ••••1234"` / `"ra••@okhdfcbank"`), stored denormalised as `destinationSummary`.
+  The duplicated `confirmAccountNumber` a BANK request carries is validated for equality and
+  never persisted. At-rest **encryption** of `paymentDetails` is NOT part of the current
+  prototype architecture (DATABASE.md only requires "excluded from ordinary queries"); it is
+  recorded as future production hardening, not invented here as a weak custom scheme.
+
 ## RESULT + SETTLEMENT
 
 Admin manually enters one 2-digit result for a closed market round.
