@@ -151,6 +151,16 @@ DISABLED
 
 Exact presentation state may be derived later, but server timing is authoritative.
 
+### Window 3A implementation clarification (no business rule changed)
+
+The frozen rules above are implemented, not altered:
+
+- **Boundary equality.** New bets are allowed on `[opensAt, closesAt)` — at exactly `closesAt` the market is closed for new bets. Bet editing is allowed while `now < editCutoffAt` — at exactly `editCutoffAt` editing is locked while new bets continue until close. `editCutoffAt = closesAt − editLockMinutesBeforeClose` (60 min for all current markets).
+- **`CLOSING_SOON`** is the edit-locked interval `[editCutoffAt, closesAt)` — a presentation label over the same timings, never a new placement cutoff. `deriveMarketStatus` returns it; `getBettingWindow` still reports `canPlaceBet: true` there.
+- **Disawar current round.** Between 00:00 and 02:59:59 IST the *current* round is still the previous calendar date's (it owns every instant in `[opensAt, closesAt)`). From 03:00 to 06:59:59 IST the current round is the new calendar date's `UPCOMING` round; the just-closed round is not "current" but remains queryable by `(marketId, businessDate)` for results/settlement. This is a round-selection convention, not loss of history.
+- **Round time snapshots.** A round persists `opensAt`/`editCutoffAt`/`closesAt` computed from the market's schedule *at creation*; a later admin schedule edit changes only future rounds.
+- **Results are read-only here.** Result strings stay `"00"`–`"99"` (2-char, leading zero preserved). No result declaration or settlement was implemented; historical results derive from `marketRounds`, not a separate collection.
+
 ## BETTING MODEL
 
 There are currently three ways to **construct the same underlying 2-digit bet**:

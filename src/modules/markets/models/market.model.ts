@@ -1,4 +1,4 @@
-import { Schema } from "mongoose";
+import { Schema, type InferSchemaType } from "mongoose";
 import { modelFor, schemaOptions, requiredText, nonnegativeInteger } from "@/lib/db/schema";
 import { marketScheduleSchema } from "@/lib/dates/market-time";
 
@@ -19,4 +19,5 @@ marketSchema.pre("validate", function () {
 });
 marketSchema.index({ slug: 1 }, { unique: true });
 marketSchema.index({ code: 1 }, { unique: true });
+export type MarketRecord = InferSchemaType<typeof marketSchema>;
 export const Market = modelFor("Market", marketSchema, "markets");

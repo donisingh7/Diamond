@@ -296,3 +296,86 @@ src/app/admin/login/page.tsx                   → "/admin/login" (public; a sib
 ```
 
 A layout nested directly under `admin/` would also wrap `admin/login`, risking a redirect loop; the `(protected)` group avoids that entirely rather than special-casing the login path inside the guard.
+
+## Window 3A: markets, rounds, server-authoritative scheduling and result read services
+
+Backend/domain only. No player Home, market cards or Results UI were built — a later Codex visual window consumes these services/APIs. No betting, wallet, admin CRUD or settlement was started. Window 2A's visual design remains pending a dedicated Codex visual refinement pass; this window did not touch it.
+
+### Module layout
+
+```text
+lib/dates/market-time.ts        # unchanged Window 1 functions + new: getBettingWindow(), MarketLifecycleState/BettingWindow types
+modules/markets/
+  models/                        # market.model.ts, market-round.model.ts — unchanged shapes; added InferSchemaType exports + one index
+  validators/market-query.ts     # Zod: marketSlugSchema, resultRangeSchema ("today"|"7d"|"30d"), resultsQuerySchema (.strict)
+  services/
+    market.service.ts            # listMarkets/listEnabledMarkets, getMarketBySlug, marketScheduleOf, ensureMarketRound,
+                                  #   currentBusinessDate, resolveCurrentRound, resolveCurrentRoundsForMarkets,
+                                  #   getMarketWithCurrentRound, getMarketsWithCurrentRounds, roundStateOf
+    result.service.ts            # historyWindow, getCurrentResults, getResultHistory
+    market-dto.ts                # toMarketDTO — the only market/round shape sent to a browser
+src/app/api/markets/route.ts             # GET  (ACTIVE PLAYER)
+src/app/api/markets/[slug]/route.ts      # GET  (ACTIVE PLAYER)
+src/app/api/results/route.ts             # GET  (ACTIVE PLAYER)
+```
+
+Route handlers stay thin exactly as the auth routes do: `requirePlayer()` (from `lib/auth/session.ts` — reused, no per-route cookie parsing), parse query with Zod, call one service, serialize a DTO. `lib/api/handler.ts`'s `apiRoute()` wrapper is now variadic so it forwards Next's route `context` (`{ params }`) to the `[slug]` handler unchanged; existing callers are unaffected. All three GETs are `export const dynamic = "force-dynamic"` — they read the session cookie and the database every call.
+
+### Permanent market vs daily round
+
+`Market` (persistent config: schedule minutes, `closeDayOffset`, `editLockMinutesBeforeClose`, `enabled`, `displayOrder`) → `MarketRound` (one business date). All six schedules originate from `markets` rows seeded by `modules/settings/seed-data.ts`; nothing is hardcoded in a service or component. Model shapes are unchanged from Window 1.
+
+`ensureMarketRound(market, businessDate)` is the single create-or-get:
+
+1. `findOne({ marketId, businessDate })` — return it if present.
+2. Else `getRoundTimes(marketScheduleOf(market), businessDate)` and `MarketRound.create(...)` with a snapshot of `opensAt`/`editCutoffAt`/`closesAt` plus `settlementStatus: "PENDING"`.
+3. On a create race the unique `(marketId, businessDate)` index throws E11000; catch it, re-read, return the winner. Concurrency is proven by an 8-way `Promise.all` integration test asserting one `_id` and `countDocuments === 1`.
+
+Timestamps are snapshotted at creation and **never recomputed**. An admin schedule edit (Window 6) changes only future rounds; an integration test mutates `closeTimeMinutes` and asserts the existing round's `closesAt` is unchanged while the next date's round uses the new value.
+
+Rounds are created only when operationally needed — resolving a market's *current* round. History queries never manufacture rounds: a 30-day results query reads persisted rows and simply has no entry for days without data.
+
+### Current-round resolution — canonical semantics
+
+`resolveCurrentRound(market, now)` returns `{ businessDate, round, state, bettingWindow }`:
+
+| Situation | `round.businessDate` | `state` |
+| --- | --- | --- |
+| before open | today (IST) | `UPCOMING` |
+| open, > 60 min to close | today | `OPEN` |
+| open, ≤ 60 min to close (edit-locked) | today | `CLOSING_SOON` |
+| after same-day close, no result | today | `RESULT_PENDING` |
+| Disawar 00:00–02:59:59 IST | **previous** calendar date | `OPEN` / `CLOSING_SOON` |
+| Disawar 03:00–06:59:59 IST | new calendar date | `UPCOMING` |
+
+The Disawar rows reuse Window 1's `resolveMarketBusinessDate`: the overnight round owns every instant in `[opensAt, closesAt)`, so at exactly `closesAt` (03:00 IST) the resolver flips to the new date's upcoming round. The just-closed round is **not** "current" but stays fully queryable by `(marketId, businessDate)` for results/settlement — this is a round-selection convention, not loss of history. A disabled market resolves to `round: null` + `state: "DISABLED"` and **no round is persisted** for it.
+
+`resolveCurrentRoundsForMarkets(markets, now)` is the batched form for the listing: one `$or` read over the unique index, then a targeted insert only for dates not yet persisted (≈6 inserts on the day's first request, 0 afterwards) — no per-market `findOne`, no aggregation pipeline.
+
+### Market state derivation
+
+`deriveMarketStatus(enabled, roundState, now)` is unchanged from Window 1 and stays the authority: `DISABLED → SETTLED → RESULT_DECLARED → UPCOMING → RESULT_PENDING → CLOSING_SOON → OPEN`. `CLOSING_SOON` is the edit-locked interval `[editCutoffAt, closesAt)` — the precise threshold this repo's "Time strategy" section already froze — **new bets are still allowed in it**; it is not a new placement cutoff and no new business-rule threshold was invented. The API exposes exact `opensAt`/`editCutoffAt`/`closesAt` instants plus `serverNow` so the later frontend can render countdown urgency itself.
+
+### Betting-window helper (Window 4 contract)
+
+`getBettingWindow(enabled, round | null, now): { canPlaceBet, canEditBet, reason? }` — one reusable gate Window 4's betting/edit services call instead of re-deriving boundary checks. Same boundaries as `isBetPlacementAllowed`/`isBetEditAllowed`:
+
+```text
+canPlaceBet = enabled AND round AND now ∈ [opensAt, closesAt) AND result absent AND settlement PENDING
+canEditBet  = canPlaceBet AND now < editCutoffAt
+reason      = MARKET_DISABLED | ROUND_NOT_FOUND | MARKET_NOT_OPEN | MARKET_CLOSED | EDIT_WINDOW_CLOSED (most relevant block)
+```
+
+Equality boundaries are frozen in unit tests: at exactly `closesAt` the market is closed for new bets; at exactly `editCutoffAt` editing is locked while new bets continue. The helper answers the *market/round* question only — Window 4 still adds per-bet `ACTIVE` status and `expectedVersion` checks. No bet is persisted in this window.
+
+### DTOs and serialization
+
+`toMarketDTO(market, resolved)` and the result services emit only: ISO-8601 UTC instants, `businessDate` as `YYYY-MM-DD`, `result` as a 2-character string (`"07"` stays `"07"`) or `null`, plus `state`, `settlementStatus`, and `canPlaceBet`/`canEditBet`/`unavailableReason`. No `declaredByAdminId`, no schedule-minute fields, no Mongo internals. Each response carries `serverNow`.
+
+### Result read model
+
+No `resultHistory`/`wins` collection — everything derives from `marketRounds`. `result` is persisted only once declared (the two-digit setter rejects `null`), so `getResultHistory` filters on `{ result: { $exists: true } }` (a `$ne: null` query would run that setter on `null` and throw). History windows are inclusive IST calendar ranges ending on `now`'s business day (`7d` = today + preceding 6; `30d` = today + preceding 29), computed with Luxon and `Asia/Kolkata` — never browser/UTC locale — and capped at today so a future-dated round cannot leak in. `range=today` returns each market's current operational round (result may be `null`/pending); cross-midnight markets follow the resolution table above.
+
+### Errors
+
+Added stable codes `MARKET_NOT_FOUND` (404), `MARKET_NOT_OPEN` (422), `ROUND_NOT_FOUND` (404), `INVALID_RESULT_RANGE` (400) to `lib/errors/domain-error.ts`. `MARKET_DISABLED`/`MARKET_CLOSED`/`EDIT_WINDOW_CLOSED` already existed and are reused verbatim — no synonymous codes.

@@ -120,3 +120,44 @@ Window 3 (Player Home + Markets + Market Timing UX + Results) was not started.
 | Manual HTTP/E2E verification | PASS — see below |
 
 Manual verification used a second disposable local MongoDB replica set (never the user's configured `.env`/database) plus a real `next dev` process and `curl` with a cookie jar. Exercised: public `/login` and `/admin/login` (200); unauthenticated `/` and `/admin` (307 to the correct login page); unauthenticated `/api/auth/me` (401); wrong password, admin-credential-via-player-portal, player-credential-via-admin-portal and disabled-user login attempts (all rejected with the documented codes); correct player and admin logins (session cookie issued, confirmed `HttpOnly`); authenticated `/api/auth/me`; authenticated cross-role visits to `/`, `/admin`, `/login` and `/admin/login` (all redirected to the correct area, no loops); logout followed by a 401 `/me` and a redirect back to login; the full OTP request → (dev-only) code → verify → session cycle, replaying the same consumed code (rejected), and an unregistered/disabled/admin phone all producing the identical generic response; a cross-origin `Origin` header on `POST /api/auth/login` (rejected 403). All temporary QA scripts, the disposable database, and the second dev server were removed/stopped afterward.
+
+## Window 3A handoff status
+
+Window 3A (Markets + daily MarketRounds + server-authoritative IST scheduling + cross-midnight handling + current-round resolution + betting-window helper + result **read** services + player market/results APIs) is complete. Backend/domain only. See ARCHITECTURE.md's "Window 3A" section for the full design, DATABASE.md's "Window 3A — index review" for the one added index, and API_CONTRACTS.md's "Window 3A — implemented Player market & results contract" for exact request/response shapes.
+
+Implemented:
+
+- `lib/dates/market-time.ts`: added `getBettingWindow(enabled, round|null, now) → {canPlaceBet, canEditBet, reason?}` and the `MarketLifecycleState`/`BettingWindow` types. The Window 1 functions (`getRoundTimes`, `resolveMarketBusinessDate`, `deriveMarketStatus`, `isBetPlacement/EditAllowed`) are unchanged; the equality-boundary semantics they froze (`[opensAt, closesAt)` placement, `now < editCutoffAt` edit, `CLOSING_SOON` = edit-locked interval) are re-asserted by new tests, not modified.
+- `modules/markets/services/market.service.ts`: `ensureMarketRound` (idempotent create-or-get, snapshots schedule at creation, unique-index race backstop), `resolveCurrentRound` / `resolveCurrentRoundsForMarkets` (canonical current-round selection incl. Disawar cross-midnight), `getMarketBySlug`, `listMarkets` / `listEnabledMarkets`, `getMarket(s)WithCurrentRound(s)`.
+- `modules/markets/services/result.service.ts`: `getCurrentResults` (today = each market's operational round), `getResultHistory` (`7d`/`30d`, optional market filter, persisted result-bearing rounds only, inclusive IST window capped at today), `historyWindow`.
+- `modules/markets/services/market-dto.ts`: `toMarketDTO` — the only market/round shape sent to a browser (ISO instants, `YYYY-MM-DD` business date, 2-char result string, no admin/Mongo internals).
+- `modules/markets/validators/market-query.ts`: Zod `marketSlugSchema`, `resultRangeSchema`, `.strict()` `resultsQuerySchema`.
+- Routes: `GET /api/markets`, `GET /api/markets/[slug]`, `GET /api/results` — thin, `requirePlayer()`-gated, `apiRoute`-wrapped, `serverNow` in every response. `apiRoute` is now variadic so it forwards Next's route context to the dynamic-segment handler.
+- `lib/errors/domain-error.ts`: added `MARKET_NOT_FOUND` (404), `MARKET_NOT_OPEN` (422), `ROUND_NOT_FOUND` (404), `INVALID_RESULT_RANGE` (400).
+- `marketRounds`: added index `{ businessDate: 1, marketId: 1 }` for cross-market history. Model document shapes unchanged; added `InferSchemaType` type exports.
+
+Deliberately **not** done (out of window): any player Home / market-card / Results visual UI (the `/` placeholder is untouched), Jodi/Crossing/Copy-Paste/Palti, bet quote/placement/editing, wallet/deposit/withdrawal, admin CRUD, admin result declaration, settlement/payout, sports/casino, real-time sockets, cron infrastructure. No result-mutation endpoint was added — result fixtures used in tests are direct `MarketRound` inserts, not a public API.
+
+**Window 2A's visual design (colors, glass strength, ticket appearance) remains pending a dedicated Codex visual refinement pass. This window built no UI and did not attempt any Window 2A visual redesign.** A future agent should not read this window's completion as visual sign-off.
+
+Window 3's visual scope (Player Home, market cards, market timing UX, Results page) is **not** started — a later Codex visual window consumes these APIs/services.
+
+## Verification record — 2026-09-06 (Window 3A)
+
+| Check | Result |
+| --- | --- |
+| `npm.cmd run typecheck` | PASS; strict TypeScript incl. new routes/services/tests |
+| `npm.cmd run lint` | PASS |
+| `npm.cmd test` | PASS; 84 tests across 11 files (61 prior + 23 new in `market-window.test.ts`) |
+| `npm.cmd run test:integration` | PASS; 50 tests across 3 files (31 prior + 19 new in `markets.integration.ts`) against a disposable MongoDB 8.2.6 replica set |
+| `npm.cmd run build` | PASS; `/api/markets`, `/api/markets/[slug]`, `/api/results` registered as dynamic route handlers |
+| `git diff --check` | PASS; no whitespace errors |
+| Manual HTTP/E2E verification | PASS — see below |
+
+New unit coverage (`market-window.test.ts`): Faridabad `06:59:59→UPCOMING`, `07:00:00→OPEN`, `16:49:59→editable`, `16:50:00→edit-locked/CLOSING_SOON/bets-still-open`, `17:49:59→bets-open`, `17:50:00→closed/RESULT_PENDING`; exact close instants for Delhi Bazar (15:00), Gali (23:10), Shree Ganesh (16:40), Ghaziabad (21:00); full Disawar cross-midnight sequence Sep 6 06:59 → Sep 7 07:00 including `02:00` edit-lock, `02:59:59` bets-open, `03:00` close, and `resolveMarketBusinessDate` flipping to the new date at exactly `03:00`; disabled/no-round/resulted/settled gates.
+
+New integration coverage (`markets.integration.ts`): round snapshot correctness; idempotent rerun; unique `(marketId, businessDate)` rejection; schedule change leaves historical round unchanged but new date uses new schedule; Disawar close lands on the next calendar day with a 60-minute cutoff; 8-way concurrent `ensureMarketRound` creates exactly one; `resolveCurrentRound` before/during/after same-day close, Disawar 01:30 (previous date) and 03:30 (new date, previous still queryable); disabled market → no persisted round + DISABLED; batched resolution creates 6 rounds once then reuses; `historyWindow` IST maths incl. a UTC-boundary case; `getCurrentResults` pending-as-null and declared-result-with-leading-zero (`"07"`), no `declaredByAdminId` in the DTO; `getResultHistory` window bounding (excludes 8-day-old and future-dated rounds), result-bearing-only filter, market filter, newest-first ordering, unknown-slug `MARKET_NOT_FOUND`; `getMarketBySlug` casing normalisation + 404.
+
+Manual HTTP verification used a **disposable** `mongodb-memory-server-core` replica set (seeded with the six markets, one ACTIVE player, one ACTIVE admin) plus a real `next dev` on port 3517 — the user's configured `.env`/database was never touched. Exercised and observed: unauthenticated `GET /api/markets` → 401; player password login → 200 + session cookie; authenticated `GET /api/markets` → 200 with 6 sanitised markets, each with a resolved round, plus `serverNow`; `GET /api/markets/faridabad` → 200; `GET /api/markets/not-a-market` → 404 `MARKET_NOT_FOUND`; `GET /api/results?range=today` → 200 with 6 entries, `?range=7d` and `?range=30d` → 200; `?range=today&market=faridabad` → 200 single entry; `?range=all-time` and `?range=today&foo=bar` → 400 `INVALID_INPUT`; `?range=7d&market=ghost` → 404 `MARKET_NOT_FOUND`; admin password login → 200, then admin session against `GET /api/markets` and `GET /api/results` → 403 (PLAYER-only boundary preserved). The dev server, the disposable database and all cookie jars/scripts were stopped and removed afterward.
+
+No live `npm run db:check` / `npm run db:seed` against the user's configured database was run in this window; all database verification used disposable replica sets.

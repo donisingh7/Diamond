@@ -1,5 +1,5 @@
 import { DateTime } from "luxon";
-import { Schema } from "mongoose";
+import { Schema, type InferSchemaType } from "mongoose";
 import { modelFor, schemaOptions, optionalUserRef, nonnegativeInteger, paise, twoDigit } from "@/lib/db/schema";
 
 export const settlementSummarySchema = new Schema({
@@ -28,4 +28,7 @@ marketRoundSchema.pre("validate", function () {
 });
 marketRoundSchema.index({ marketId: 1, businessDate: 1 }, { unique: true });
 marketRoundSchema.index({ closesAt: 1 });
+// Cross-market result history: businessDate range scan across all markets, newest first.
+marketRoundSchema.index({ businessDate: 1, marketId: 1 });
+export type MarketRoundRecord = InferSchemaType<typeof marketRoundSchema>;
 export const MarketRound = modelFor("MarketRound", marketRoundSchema, "marketRounds");

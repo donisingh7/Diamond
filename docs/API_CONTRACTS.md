@@ -116,3 +116,19 @@ The five auth routes above are now real route handlers (`src/app/api/auth/**/rou
 | `GET /api/auth/me` | none (cookie only) | `{user: PublicUser}` | `UNAUTHENTICATED` (401 — also covers a disabled/deleted user's stale cookie) |
 
 `PublicUser` is `{id, role, loginId, name, phone, email, status}` (`src/modules/users/services/public-user.ts`) — the only shape ever sent to a browser; a hydrated Mongoose document (with `passwordHash`, even when explicitly `.select("+passwordHash")`ed for verification) is never spread into a response. All four state-changing routes reject a request whose `Origin` header doesn't match the request's own origin (`src/lib/http/same-origin.ts`); `GET /me` is read-only and exempt. Zod validation failures on any route return `400 INVALID_INPUT` before reaching the domain service.
+
+## Window 3A — implemented Player market & results contract
+
+Three read-only routes (`src/app/api/markets/route.ts`, `src/app/api/markets/[slug]/route.ts`, `src/app/api/results/route.ts`), all `apiRoute`-wrapped with the shared `{data:...}` / `{error:{code,message}}` shape, all requiring an **ACTIVE PLAYER** session via the reused `requirePlayer()` primitive (no per-route cookie parsing). An unauthenticated request is `401 UNAUTHENTICATED`; an authenticated **ADMIN** is `403 FORBIDDEN` — these are PLAYER-only APIs and the role boundary is preserved, not widened. Being GETs they are exempt from the same-origin check, matching `GET /api/auth/me`. Each response includes `serverNow` (ISO-8601) so a later frontend can correct client clock skew in countdowns. No player market/results UI was built against them in this window.
+
+| Route | Query | `200` `data` | Notable errors |
+| --- | --- | --- | --- |
+| `GET /api/markets` | none | `{markets: MarketDTO[], serverNow}` | `401`, `403` |
+| `GET /api/markets/[slug]` | none | `{market: MarketDTO, serverNow}` | `401`, `403`, `MARKET_NOT_FOUND` (404) |
+| `GET /api/results` | `range=today\|7d\|30d` (default `today`), optional `market=<slug>` | `{range, results: ResultEntry[], serverNow}` | `401`, `403`, `INVALID_INPUT` (400 — bad range or stray param; `.strict()` Zod), `MARKET_NOT_FOUND` (404 — unknown `market`) |
+
+`MarketDTO` = `{id, name, slug, code, timezone, enabled, editLockMinutesBeforeClose, displayOrder, state, round}`. `state` is the `deriveMarketStatus` value (`DISABLED|UPCOMING|OPEN|CLOSING_SOON|RESULT_PENDING|RESULT_DECLARED|SETTLED`). `round` is `null` for a disabled market, otherwise `{id, businessDate:"YYYY-MM-DD", opensAt, editCutoffAt, closesAt, state, result:"NN"|null, resultDeclaredAt: iso|null, settlementStatus, canPlaceBet, canEditBet, unavailableReason}`. `canPlaceBet`/`canEditBet`/`unavailableReason` are `getBettingWindow` output verbatim; Window 4 reuses that helper directly rather than parsing the DTO.
+
+`ResultEntry` = `{marketId, name, slug, code, displayOrder, businessDate, state, result:"NN"|null, resultDeclaredAt: iso|null, settlementStatus, opensAt: iso|null, closesAt: iso|null}`. No `declaredByAdminId` or other admin identifiers are exposed.
+
+`range=today` returns one entry per market — its current operational round (see ARCHITECTURE.md's resolution table: a cross-midnight market between 00:00 and 03:00 IST still reports the previous business date; 03:00–07:00 reports the upcoming round with `result: null`). `range=7d`/`30d` return only persisted **result-bearing** rounds inside an inclusive `Asia/Kolkata` calendar window ending on the current business day (7d = today + 6 prior days; 30d = today + 29), capped at today; ordered newest business date first, then `displayOrder`. Neither range ever creates rounds. `INVALID_RESULT_RANGE` (400) is a defined code for a range value that somehow reaches the service unrecognised; the Zod enum normally rejects it first as `INVALID_INPUT`.

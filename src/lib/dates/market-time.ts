@@ -17,6 +17,24 @@ export type RoundState = RoundTimes & {
   settlementStatus: "PENDING" | "PROCESSING" | "SETTLED" | "FAILED";
 };
 
+/**
+ * Derived, never persisted as a mutable flag. CLOSING_SOON is the edit-locked interval
+ * [editCutoffAt, closesAt) per ARCHITECTURE.md — new bets are still allowed in it.
+ */
+export type MarketLifecycleState =
+  | "DISABLED" | "UPCOMING" | "OPEN" | "CLOSING_SOON"
+  | "RESULT_PENDING" | "RESULT_DECLARED" | "SETTLED";
+
+export type MarketAvailabilityReason =
+  | "MARKET_DISABLED" | "ROUND_NOT_FOUND" | "MARKET_NOT_OPEN" | "MARKET_CLOSED" | "EDIT_WINDOW_CLOSED";
+
+/** Server-authoritative answer to "can a bet be placed / edited right now" for Window 4 to consume verbatim. */
+export type BettingWindow = {
+  canPlaceBet: boolean;
+  canEditBet: boolean;
+  reason?: MarketAvailabilityReason;
+};
+
 function localDate(businessDate: string, timezone: string) {
   const day = DateTime.fromISO(businessDate, { zone: timezone });
   if (!/^\d{4}-\d{2}-\d{2}$/.test(businessDate) || !day.isValid || day.toISODate() !== businessDate) {
@@ -57,7 +75,7 @@ export function isBetEditAllowed(enabled: boolean, round: RoundState, now: Date,
   return betStatus === "ACTIVE" && isBetPlacementAllowed(enabled, round, now) && now < round.editCutoffAt;
 }
 
-export function deriveMarketStatus(enabled: boolean, round: RoundState, now: Date) {
+export function deriveMarketStatus(enabled: boolean, round: RoundState, now: Date): MarketLifecycleState {
   if (!enabled) return "DISABLED";
   if (round.settlementStatus === "SETTLED") return "SETTLED";
   if (round.result != null) return "RESULT_DECLARED";
@@ -65,4 +83,21 @@ export function deriveMarketStatus(enabled: boolean, round: RoundState, now: Dat
   if (now >= round.closesAt) return "RESULT_PENDING";
   if (now >= round.editCutoffAt) return "CLOSING_SOON";
   return "OPEN";
+}
+
+/**
+ * Single reusable gate for Window 4 betting/edit validation — same boundaries as
+ * isBetPlacementAllowed/isBetEditAllowed, but shaped as {canPlaceBet, canEditBet, reason}.
+ * Placement interval is [opensAt, closesAt); editing additionally needs now < editCutoffAt.
+ * A missing round (disabled market that never got one) short-circuits before any date maths.
+ */
+export function getBettingWindow(enabled: boolean, round: RoundState | null, now: Date): BettingWindow {
+  if (!enabled) return { canPlaceBet: false, canEditBet: false, reason: "MARKET_DISABLED" };
+  if (!round) return { canPlaceBet: false, canEditBet: false, reason: "ROUND_NOT_FOUND" };
+  if (isBetPlacementAllowed(enabled, round, now)) {
+    const canEditBet = now < round.editCutoffAt;
+    return { canPlaceBet: true, canEditBet, reason: canEditBet ? undefined : "EDIT_WINDOW_CLOSED" };
+  }
+  const reason: MarketAvailabilityReason = now < round.opensAt ? "MARKET_NOT_OPEN" : "MARKET_CLOSED";
+  return { canPlaceBet: false, canEditBet: false, reason };
 }

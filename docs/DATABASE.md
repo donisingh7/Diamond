@@ -506,3 +506,13 @@ All balances, stakes, payouts and summary money values are validated safe intege
 ### Transaction requirement
 
 Use Atlas or a local replica set. A local example is `mongod --replSet rs0 --bind_ip 127.0.0.1 --dbpath <dedicated-directory>` followed once by `mongosh --eval 'rs.initiate()'`; wait for primary election, then connect to an explicit database with `?replicaSet=rs0`. Use your installed MongoDB tooling and a dedicated data directory. Standalone Mongo is not supported for financial features. No production infrastructure is provisioned in this window.
+
+### Window 3A — index review and additions
+
+No new collections. Markets and rounds still derive every view (today, 7-day, 30-day, per-market history) — no `resultHistory`/`wins`.
+
+`markets`: `slug` unique and `code` unique are unchanged and sufficient (six rows, listing sorts in memory by `displayOrder`).
+
+`marketRounds` preserved: `{ marketId: 1, businessDate: 1 }` unique (current-round lookup, per-market history, concurrency backstop) and `{ closesAt: 1 }`. **Added:** `{ businessDate: 1, marketId: 1 }` — the cross-market results-history query is a `businessDate` range across all markets sorted newest-first, which the `marketId`-leading unique index cannot serve. `result` presence is a residual `$exists` filter, not indexed (≤ 6 rows per business date). No other fields were indexed.
+
+`ensureMarketRound` relies on the unique `(marketId, businessDate)` index as its race backstop: a lost create race throws E11000 and the winner is re-read rather than a duplicate inserted.
