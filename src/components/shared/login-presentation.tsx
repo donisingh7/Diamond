@@ -105,14 +105,15 @@ export function LoginPresentation({ admin = false }: { admin?: boolean }) {
   }
 
   return (
-    <main className="login-page">
-      <div className="login-brand"><Brand /></div>
+    <main className={`login-page${admin ? " login-page--admin" : ""}`}>
+      <div className="login-brand"><Brand /><span className="eyebrow">{admin ? "Administration" : "Player access"}</span></div>
       <div className="login-composition">
         <div className="login-story">
-          <p className="eyebrow">{admin ? "Diamond · Administration" : "The Diamond experience"}</p>
-          <h1 className="type-display">{admin ? <>Clarity.<br />In every detail.</> : <>A little instinct.<br /><span className="text-accent">A considered play.</span></>}</h1>
-          <p className="text-secondary">{admin ? "A focused space to manage the experience." : "Your markets, your moments. All in one place."}</p>
-          <div className="login-signature" aria-hidden="true"><span /><span /><span /></div>
+          <div className="diamond-aperture" aria-hidden="true"><span /><span /><span /></div>
+          <p className="eyebrow">{admin ? "A clear perspective" : "Every market. One place."}</p>
+          <h1 className="type-display">{admin ? <>Clarity.<br /><span className="text-accent">In every detail.</span></> : <>Your daily<br /><span className="text-accent">point of view.</span></>}</h1>
+          <p className="text-secondary">{admin ? "A focused workspace for the Diamond experience." : "Follow your markets. Know the timing. Stay close to every result."}</p>
+          <div className="login-signature"><span aria-hidden="true" /><p className="type-caption text-muted">{admin ? "Secure administration" : "A considered space for your next play"}</p></div>
         </div>
         <GlassCard variant="strong" className="login-card">
           <div className="stack">
@@ -121,8 +122,8 @@ export function LoginPresentation({ admin = false }: { admin?: boolean }) {
             {view === "password" && (
               <>
                 <div>
-                  <h2 className="type-page-title">{admin ? "Admin Access" : "Welcome Back"}</h2>
-                  <p className="text-secondary type-body-small">{admin ? "Sign in to your workspace." : "Good to see you again."}</p>
+                  <h2 className="type-page-title">{admin ? "Admin access" : "Welcome back"}</h2>
+                  <p className="text-secondary type-body-small">{admin ? "Sign in to your workspace." : "Sign in to your Diamond account."}</p>
                 </div>
                 {error && <Alert title="Sign-in failed" tone="danger">{error}</Alert>}
                 <form className="stack" onSubmit={submitPassword}>

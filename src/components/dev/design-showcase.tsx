@@ -54,7 +54,7 @@ function useDemoInstants() {
 
 export function DesignShowcase() {
   const toast = useToast();
-  const [selectedTile, setSelectedTile] = useState("7");
+  const [selectedTile, setSelectedTile] = useState("07");
   const demoInstants = useDemoInstants();
   const invalidInstant = new Date(NaN);
   const notify = (title: string) => toast({ title, description: "Design studio demonstration only. No account action was performed." });
@@ -227,7 +227,7 @@ export function DesignShowcase() {
       <section className="studio-section">
         <div className="studio-section-heading"><h3 className="type-section-title">Number tiles &amp; countdown</h3><p>Tabular numerals, clear selected state.</p></div>
         <div className="row" role="group" aria-label="Sample number selection">
-          {["3", "7", "9", "12", "45", "88"].map((value) => (
+          {["00", "07", "09", "12", "45", "99"].map((value) => (
             <NumberTile key={value} value={value} selected={selectedTile === value} onClick={() => setSelectedTile(value)} />
           ))}
         </div>

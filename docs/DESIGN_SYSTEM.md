@@ -193,3 +193,46 @@ Reusable primitives (`src/components/ui/*`): `Button`/`IconButton` (variant × s
 **Login presentations** (`src/components/shared/login-presentation.tsx`, shared by `/login` and `/admin/login`): password fields default-visible with a "Login with OTP" secondary action for players only; the admin variant swaps copy/iconography but has no secondary path. Both forms `preventDefault` on submit and the submit button is disabled — there is no signup/register/create-account entry point anywhere in the player or admin surfaces, and no authentication call executes.
 
 **Dependencies**: Radix (`dialog`, `alert-dialog`, `tabs`, `dropdown-menu`, `toast`) is the sole overlay/menu/tabs primitive layer, `lucide-react` the sole icon set — no competing UI kit was introduced. `@testing-library/react`, `@testing-library/user-event` and `jsdom` were deliberately **not** installed: the interactions worth covering in Window 2A (countdown formatting, nav active-state matching, the dev/production route guard) are pure functions or context-free `notFound()` calls that a plain Node `vitest` environment already exercises without a DOM, so the dependency wasn't justified. Revisit this once a real interaction (form submission, ticket confirm flow) needs simulated user events.
+
+## Window 2A-V and Window 3B implementation
+
+This section supersedes the historical Window 1/2A palette and presentation-only auth notes above. The earlier visual implementation was not user-approved. This sprint replaces its material and composition system; it does not imply user visual sign-off.
+
+### Material and typography
+
+The palette is graphite `#0b0c0e`, raised charcoal `#191b1d`, pearl `#f3f1ec`, champagne `#d8c7a5`, muted sage `#a9cbb6` for success, and cool silver `#b8cbd0` for information. Champagne is restricted to primary actions, selected numbers, results and small identity details. Background lighting combines low-opacity sage and warm reflections behind surfaces. No oversaturated blue/purple or continuous ambient animation.
+
+Glass is now visibly translucent: subtle `#26292b45`, default `#26292b85`, strong `#272a2bd6`, with a common internal highlight layer, 16–40px backdrop blur, restrained top-edge light and deeper shadows. Tables retain opaque charcoal for reading. Cards use 24px radii, primary panels 28px, controls 10–14px. The existing licensed Geist Sans/Mono font setup stays; tighter display tracking, lighter display weights, calmer labels and isolated monospace result/countdown typography create hierarchy without another network font dependency.
+
+Login uses an asymmetric desktop composition with a quiet faceted aperture behind the story and a separate frosted form. At phone widths, the composition becomes a focused full-width form with restrained atmospheric light. Password/OTP state, API requests, redirects and role protection remain unchanged.
+
+Shared buttons use tactile highlights and the existing reduced-motion-aware press spring. Inputs become recessed glass wells with visible focus. Tabs receive a raised segmented control treatment. NumberTile has a solid champagne selected state. Modal, BottomSheet, Drawer, Toast and profile menu share layered blur; Radix retains focus trapping, Escape dismissal and focus return. Admin navigation uses a quiet opaque/translucent rail with denser reading surfaces.
+
+### TicketSurface
+
+The reusable receipt remains presentation-only: frosted paper/glass with a warm internal light, strong total hierarchy, dashed section dividers and a 7px bottom edge with approximately 1.5px notches. No zigzag, fabricated receipt ID, placement flow or export action. Print CSS makes the receipt white with dark readable text, neutral dividers, no blur or shadows and avoids internal page breaks. Real receipt data and downloads remain deferred.
+
+### Player compositions
+
+Home pairs a greeting/market entry with a compact available-balance panel. Market cards use three columns on large screens, two below 1200px and a single deliberate stack below 768px. Results use the same card hierarchy with business-date groups. The compact Home results strip adapts from six to three to two columns. Market detail pairs a schedule/countdown panel with a separate availability explanation; phone layouts stack those panels. Explicit dates on every market card and detail timing prevent overnight close ambiguity.
+
+The existing desktop navigation remains Home / Results / My Bets / Wallet plus balance and profile. Mobile has Home / Results / central Play / My Bets / Wallet; Play links to `/markets`, and `/play` redirects there. Mobile navigation retains safe-area padding and 44px+ targets. My Bets and Wallet destinations are clearly labelled future-release placeholders, not full later-window pages.
+
+### Frontend data decisions
+
+`src/lib/ui/use-player-api.ts` is a narrow authenticated GET hook, not a new domain layer. It consumes the existing JSON envelopes with no-store requests, aborts superseded requests, times out after 15 seconds, refreshes visible pages every 30 seconds and on return to the page, and redirects expired sessions to login. Failed refreshes remove stale data and expose retry; changing a results query cannot display data from the previous query. DTO types use erased type-only imports from the existing backend, without bundling services into the browser.
+
+Wallet data is read once by the protected player account provider and shared with Home and the header. Available/reserved paise are never recalculated; Money uses the existing exact formatter. Countdown accepts an API `serverNow` and a monotonic receipt timestamp, then advances by elapsed time. It never determines operational state or betting eligibility. Status may be up to 30 seconds old between successful refreshes; no placement UI is enabled from that state.
+
+The live app verification uses an isolated, disposable local MongoDB replica set and synthetic QA accounts/results. The configured `.env` and database are untouched. Synthetic records are confined to this QA environment; production-facing pages always read real API responses. Backend/API/domain files remain unchanged.
+
+### Verification checkpoint — 2026-09-06
+
+- `npm.cmd run typecheck`: PASS.
+- `npm.cmd run lint`: PASS, no warnings.
+- `npm.cmd test`: PASS, 178 tests across 15 files (173 baseline plus five presentation tests covering server-owned cutoff selection, explicit overnight dates and lifecycle labels).
+- `npm.cmd run build`: PASS, all new player routes registered.
+- `git diff --check`: PASS (only Git's informational LF/CRLF conversion warnings).
+- Real application HTTP checks on port 3799 with an isolated replica set: anonymous markets 401; player password login 200; authenticated Home, selector, Disawar detail and Results HTML 200; market list/detail, today, 7-day market-filtered results, 30-day results and wallet APIs 200. Historical `00`, `07` and `99` remained strings. Wallet response is the actual zero-balance test wallet.
+- Browser visual/interaction QA: PENDING. Built-in computer-use inventory returned no browsers; selecting a local browser returned `No browser is available`. A request to use local Playwright/Chromium is awaiting user response. No rendered screenshots or exact viewport inspections have been performed; CSS review and HTTP output do not constitute visual QA.
+- 2A-V and 3B implementation are ready for browser inspection, not accepted as visually complete. Commit is pending the required browser checks. Window 4B has not started.
