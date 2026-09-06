@@ -1,35 +1,49 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: dark;
+  --background: #090b10;
+  --foreground: #f3f4f7;
+  --surface: #141821;
+  --surface-raised: #1d2330;
+  --muted: #9ca5b8;
+  --accent: #adc6ff;
+  --border: #ffffff18;
+  --radius-panel: 1.5rem;
+  --container-width: 80rem;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
 }
 
 * {
   box-sizing: border-box;
 }
 
-html,
-body {
-  max-width: 100vw;
-  overflow-x: hidden;
-}
-
 body {
   margin: 0;
+  min-width: 320px;
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 a {
   color: inherit;
-  text-decoration: none;
 }
+
+button, input, select, textarea { font: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+::selection { background: #adc6ff40; }
+.app-container { width: min(100% - 2rem, var(--container-width)); margin-inline: auto; }
+.numeric { font-variant-numeric: tabular-nums; }
+@media (min-width: 768px) { .app-container { width: min(100% - 4rem, var(--container-width)); } }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
