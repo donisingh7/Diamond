@@ -12,6 +12,8 @@ export function usePlayerApi<T>(url: string) {
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
+    // A retry needs visible feedback; successful background refreshes keep their content.
+    setState(previous => previous.url === url && previous.data ? previous : { url, loading: true });
     const timeout = setTimeout(() => controller.abort("timeout"), 15000);
     try {
       const response = await fetch(url, { cache: "no-store", credentials: "same-origin", signal: controller.signal });

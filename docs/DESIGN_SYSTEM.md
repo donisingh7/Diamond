@@ -234,5 +234,77 @@ The live app verification uses an isolated, disposable local MongoDB replica set
 - `npm.cmd run build`: PASS, all new player routes registered.
 - `git diff --check`: PASS (only Git's informational LF/CRLF conversion warnings).
 - Real application HTTP checks on port 3799 with an isolated replica set: anonymous markets 401; player password login 200; authenticated Home, selector, Disawar detail and Results HTML 200; market list/detail, today, 7-day market-filtered results, 30-day results and wallet APIs 200. Historical `00`, `07` and `99` remained strings. Wallet response is the actual zero-balance test wallet.
-- Browser visual/interaction QA: PENDING. Built-in computer-use inventory returned no browsers; selecting a local browser returned `No browser is available`. A request to use local Playwright/Chromium is awaiting user response. No rendered screenshots or exact viewport inspections have been performed; CSS review and HTTP output do not constitute visual QA.
-- 2A-V and 3B implementation are ready for browser inspection, not accepted as visually complete. Commit is pending the required browser checks. Window 4B has not started.
+- At this historical checkpoint, browser visual/interaction QA was pending because built-in computer use had no browser. The recovered local Playwright evidence and completed browser audit below supersede that pending status.
+
+### Recovery and completed browser audit — 2026-09-07
+
+**Window 2A-V COMPLETE; Window 3B COMPLETE.** This records implementation and browser-QA completion, not user visual sign-off. Window 4B has not started.
+
+Recovery began on `codex-frontend` with a clean working tree. The prior sprint was already checkpoint committed as `a2f782e` (`wip: checkpoint codex visual rework and player frontend`). Its 24-file frontend implementation was preserved; no reset, restore, checkout-over, redesign restart or backend merge occurred. Work stayed in `D:\Projects\Diamond`; `D:\Projects\Diamond-Claude` was untouched.
+
+The previous session's ignored `node_modules/.cache/diamond-visual/` directory retained 44 route/viewport capture records and screenshots, a 15-check passing interaction report, and the running disposable MongoDB replica-set fixture on port 3799. These recovered records confirm the earlier login refinements, results filters, leading zeros, navigation, overlay focus, hover/press, reduced-motion and hydration checks. They were inspected and reused rather than treated as missing implementation. The fixture uses synthetic QA accounts and historical results; `.env` and the configured database were not changed or seeded.
+
+#### Browser and exact coverage
+
+Used cached Playwright 1.61.1 and cached Chromium 149.0.7827.55. No browser or persistent testing dependency was installed. The authenticated application used its existing API routes and disposable database. Failure, delay, empty-list and disabled-market edge cases used browser request interception only; no API or database-model changes were made to create these states.
+
+Final rendered captures and horizontal-overflow assertions covered every row below at **1440×1000, 768×1024, 375×812 and 320×812 CSS pixels** (36 route/viewport combinations):
+
+| Surface | Route(s) | Verification |
+| --- | --- | --- |
+| Player/admin login | `/login`, `/admin/login` | Desktop split and phone form, typography, glass, input/submit layout |
+| Player Home | `/` | Greeting, real wallet balance, market grid, today's results, shell |
+| Market selector | `/markets` | Cards, dates, status, availability filters, countdowns |
+| Normal and overnight detail | `/markets/gali`, `/markets/disawar` | Schedule hierarchy, explicit next-day close, availability panel |
+| Results | `/results`, `/results?range=7d` | Pending and declared values, dates, cards, market/range controls; `00` and `07` preserved |
+| Shared design system | `/dev/design-system` | Tokens, typography, glass, controls, feedback and presentation-only ticket |
+
+No horizontal document overflow occurred in those captures or in the state/safe-area captures. Final screenshot comparisons retained the existing graphite/champagne palette, restrained internal reflections, distinct glass layers, readable numeric hierarchy and deliberate tablet/phone layouts. TicketSurface was captured separately at all four widths: warm glass, clear total, dashed sections and subtle bottom perforation. It remains a labelled sample, with no placement, receipt reference or final ticket workflow.
+
+#### Loading, errors and empty content
+
+- At all four widths, delayed market-list, market-detail and results requests displayed labelled page skeletons. HTTP 503 responses displayed readable errors and retry actions. Retrying displayed pending feedback and returned to real API data after success.
+- Empty market lists and empty results history displayed their respective empty states at all four widths. Home separately displayed no-market/no-result content alongside a wallet error. The open-now empty state offered the all-markets recovery action.
+- At 320×812, a real unknown-market API response rendered "Market not found" and recovered through "Back to markets". An intercepted disabled/no-round DTO rendered "Market unavailable". A failed results-filter request recovered through "Retry filters".
+- An aborted network request and a response delayed beyond the existing 15-second timeout produced the connection-interrupted state. Network-error retry recovered successfully. Neither scenario produced an uncaught page error.
+- At 320×812, wallet initial load and failed-read retry displayed "Loading balance…", then the real zero balance. Both login portals showed a disabled, busy submit button and spinner during delayed real login requests, followed by the real invalid-credentials alert.
+
+#### Safe areas and mobile emulation
+
+Touch/mobile Chromium emulation used device scale factor 3 and actual CDP `Emulation.setSafeAreaInsetsOverride` values, rather than assuming desktop zero insets prove notch support:
+
+| CSS viewport | Insets (top / right / bottom / left) | Observed after fix |
+| --- | --- | --- |
+| 375×812 | 44 / 0 / 34 / 0 px | Header top padding 44px; bottom-nav clearance 34px |
+| 320×812 | 44 / 0 / 34 / 0 px | Header top padding 44px; bottom-nav clearance 34px |
+| 812×375 landscape | 0 / 44 / 21 / 44 px | Header/content left clearance 44px; bottom-nav clearance 21px |
+
+All five mobile navigation targets measured at least 44×44px (smallest observed approximately 49×56px). At the end of the market list, the final content sat above the bottom bar after scrolling. Sheets retained safe bottom padding, fit the emulated viewport and dismissed normally. Both login brands cleared the 44px portrait top inset. Browser viewport output includes `viewport-fit=cover`; zoom is not disabled. These are Chromium emulation checks, not physical iPhone/Safari verification.
+
+#### Accessibility and final regressions
+
+At 320×812, modal, sheet and drawer placed initial focus on their heading, trapped repeated Tab navigation, closed on Escape and restored focus to the trigger. The skip link moved focus to the player main content. All five player navigation destinations and `aria-current` states were checked, including the existing My Bets/Wallet placeholders. No later-window UI was added.
+
+Reduced-motion verification retained no press transform and the existing 0.00001-second skeleton animation backstop. The countdown advanced using its existing server anchor and retained `role="timer"` / `aria-live="off"`. The final regression pass reported no hydration, console or uncaught page errors. Earlier recovered evidence also covers visible login keyboard focus, dropdown focus return, keyboard tabs, number selection, toast dismissal, normal-motion hover/press and successful real player login.
+
+QA-only harness corrections were required for a hidden native `<option>` (assert attachment, not visibility), the ticket's actual `.ticket` selector, and the development-only Next.js badge intercepting the Home click. The final interaction harness hides only `nextjs-portal`, as the previous session did; product source/configuration was not changed to hide development tooling. Those harness failures were not application defects.
+
+#### Defects fixed during recovery
+
+1. **Incomplete notch handling.** The rendered viewport omitted `viewport-fit=cover`. With nonzero insets, the login brand began at 24px beneath a 44px top exclusion, and landscape header/content began at 20px/32px beneath a 44px side exclusion. Added the supported static Next.js viewport export and safe-area-aware container, header, login, navigation and overlay gutters. Existing zero-inset spacing is preserved; the browser theme color matches graphite.
+2. **Retry lacked pending feedback.** During a delayed retry after failure, the error and active retry button remained visible with no loading indicator. The existing authenticated GET hook now enters its loading state when no current data exists. Successful background refreshes retain their current content. API contracts, polling interval, timeout, abort handling and authentication behavior are unchanged.
+3. **Tablet ticket specimen compressed labels.** A separate 768px ticket capture exposed mid-word wrapping in "Market" and "Total amount" despite no document overflow. The showcase's tablet hero now reserves a 352px minimum ticket column and uses a 32px gap. The shared ticket and player layouts are unchanged; final captures verify readable labels at all four widths.
+
+No unresolved application defects were observed within this scope. Backend/domain/API/auth files, market scheduling, Mongo models, betting engines, wallet/withdrawal services and backend handoff documents are unchanged. Window 4B, full My Bets, wallet/withdrawal UI, admin CRUD and final ticket workflow remain deferred.
+
+#### Final quality gates and evidence
+
+| Command | Result |
+| --- | --- |
+| `npm.cmd run typecheck` | PASS; route type generation and strict TypeScript |
+| `npm.cmd run lint` | PASS; no warnings/errors |
+| `npm.cmd test` | PASS; 178 tests across 15 files |
+| `npm.cmd run build` | PASS; Next.js 16.3.4 production build and route generation |
+| `git diff --check` | PASS; only informational LF/CRLF conversion notices |
+
+PowerShell used `npm.cmd` for the requested npm scripts. No live database seed/reset/check or additional backend integration run was needed for these presentation fixes. Local ignored evidence remains under `node_modules/.cache/diamond-visual/recovery/`: `report.json` (36 viewport checks, 13 state records, three nonzero safe-area configurations, zero page errors), `regression-report.json`, final page/state screenshots, comparison sheets and ticket/overlay captures. Earlier `capture-report.json` and `interaction-report.json` remain intact in the parent directory. These local artifacts are not committed or required to build the app.
