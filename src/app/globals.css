@@ -1,5 +1,35 @@
 @import "tailwindcss";
 
+/* My Bets keeps the public reference and wager at the center of each record. */
+.my-bets,.bet-detail { min-width: 0; }
+.my-bets-list,.bet-revisions { display: grid; gap: 16px; list-style: none; margin: 0; padding: 0; }
+.my-bet-card { display: grid; gap: 18px; border-inline-start: 3px solid var(--gaming-gold); }
+.my-bet-card .between,.bet-detail .between { flex-wrap: wrap; gap: 12px; }
+.my-bet-reference,.my-bet-numbers { font-family: var(--font-geist-mono),monospace; }
+.my-bet-reference,.bet-detail .bet-reference { overflow-wrap: anywhere; min-width: 0; }
+.my-bet-summary { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.my-bet-summary > div { min-width: 0; }
+.my-bet-summary > div:last-child { text-align: right; }
+.my-bet-summary .money { white-space: normal; overflow-wrap: anywhere; }
+.my-bet-card .bet-facts:empty { display: none; }
+.my-bet-card .text-link { min-height: 44px; }
+.bet-detail-layout { display: grid; grid-template-columns: minmax(0,1.5fr) minmax(0,1fr); gap: 24px; align-items: start; }
+.bet-detail-layout > * { min-width: 0; }
+.bet-detail .bet-reference { margin: 0; }
+.bet-detail-timing .bet-facts > div { flex-direction: column; gap: 4px; }
+.bet-detail-timing dd { text-align: left; }
+.bet-detail .bet-receipt-selections { margin-top: 0; }
+.revision-compositions { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 24px; padding-top: 16px; }
+.revision-compositions > div { min-width: 0; }
+.bet-revisions .glass-panel { border-top: 2px solid var(--border-strong); }
+@media (max-width: 767px) {
+  .my-bets .section-heading { flex-wrap: wrap; gap: 16px; }
+  .my-bet-summary { align-items: start; flex-direction: column; }
+  .my-bet-summary > div:last-child { text-align: left; }
+  .bet-detail-layout,.revision-compositions { grid-template-columns: minmax(0,1fr); }
+  .bet-detail .glass-panel { padding: 24px 20px; }
+}
+
 /* Focused confirmation and the server-issued receipt share the existing materials. */
 .bet-confirmation { width: 100%; max-width: 620px; margin-inline: auto; scroll-margin-top: 28px; min-width: 0; }
 .bet-review { border-top: 3px solid var(--gaming-gold); }

@@ -13,6 +13,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { rupeesToPaise } from "@/lib/money";
 import { useBetTransaction } from "@/lib/ui/use-bet-transaction";
 import { BetReview } from "./bet-review";
+import type { QuoteRequest } from "@/modules/betting/validators/quote-input";
 
 const jodiNumbers = Array.from({ length: 100 }, (_, index) => String(index).padStart(2, "0"));
 
@@ -26,15 +27,15 @@ function NumberPreview({ numbers, label }: { numbers: string[]; label: string })
   </div>;
 }
 
-export function BetBuilder({ marketSlug, marketName, timezone }: { marketSlug: string; marketName: string; timezone: string }) {
+export function BetBuilder({ marketSlug, marketName, timezone, initialEntry, initialStake, onReview }: { marketSlug: string; marketName: string; timezone: string; initialEntry?: EntryInput; initialStake?: string; onReview?: (request: QuoteRequest) => void }) {
   const id = useId();
   const transaction = useBetTransaction();
-  const [method, setMethod] = useState<EntryInput["entryMethod"]>("JODI");
-  const [numbers, setNumbers] = useState<string[]>([]);
-  const [digits, setDigits] = useState("");
-  const [rawInput, setRawInput] = useState("");
-  const [palti, setPalti] = useState(false);
-  const [stake, setStake] = useState("");
+  const [method, setMethod] = useState<EntryInput["entryMethod"]>(initialEntry?.entryMethod ?? "JODI");
+  const [numbers, setNumbers] = useState<string[]>(initialEntry?.entryMethod === "JODI" ? initialEntry.numbers : []);
+  const [digits, setDigits] = useState(initialEntry?.entryMethod === "CROSSING" ? initialEntry.digits : "");
+  const [rawInput, setRawInput] = useState(initialEntry?.entryMethod === "COPY_PASTE" ? initialEntry.rawInput : "");
+  const [palti, setPalti] = useState(initialEntry?.entryMethod === "COPY_PASTE" ? initialEntry.palti : false);
+  const [stake, setStake] = useState(initialStake ?? "");
   const entry: EntryInput = method === "JODI" ? { entryMethod: method, numbers } : method === "CROSSING" ? { entryMethod: method, digits } : { entryMethod: method, rawInput, palti };
   const preview = previewSelections(entry);
   const amount = previewStake(stake, preview.numbers.length);
@@ -73,7 +74,7 @@ export function BetBuilder({ marketSlug, marketName, timezone }: { marketSlug: s
           <div className="builder-total" role="status" aria-live="polite" aria-atomic="true"><span>Estimated total</span><strong>{amount.totalPaise === undefined ? "—" : <Money paise={amount.totalPaise} />}</strong></div>
         </div>
         <p className="type-caption text-muted">Local draft only. Nothing is placed or saved. Final amounts and availability require server confirmation.</p>
-        <Button disabled={!!preview.error || !!amount.error || !amount.totalPaise} onClick={() => void transaction.review({ ...entry, marketSlug, stakePaise: rupeesToPaise(stake) })}>Review bet</Button>
+        <Button disabled={!!preview.error || !!amount.error || !amount.totalPaise} onClick={() => { const request = { ...entry, marketSlug, stakePaise: rupeesToPaise(stake) }; if (onReview) onReview(request); else void transaction.review(request); }}>{onReview ? "Review changes" : "Review bet"}</Button>
       </GlassCard>
     </div>
   </section>;

@@ -31,6 +31,8 @@ export function BetReview({ transaction: tx, marketName, timezone }: { transacti
       <TicketSection><p className="type-label">{bet.totalSelections} selections</p><ul className="bet-receipt-selections" aria-label="Placed selections and stakes">{bet.selections.map(selection => <li key={selection.number}><strong>{selection.number}</strong><Money paise={selection.stakePaise} /></li>)}</ul></TicketSection>
       <TicketSection><dl className="bet-facts"><div><dt>Total stake</dt><dd className="bet-payable"><Money paise={bet.totalStakePaise} /></dd></div><div><dt>Payout rate</dt><dd>{bet.payoutMultiplierSnapshot}×</dd></div><div><dt>Placed · IST</dt><dd><time dateTime={bet.placedAt}>{marketDateTime(bet.placedAt, timezone)}</time></dd></div></dl></TicketSection>
     </TicketSurface>
+    <Link className="button button--primary" href={`/my-bets/${encodeURIComponent(bet.publicRef)}`}>View bet & revisions</Link>
+    <Link className="button button--secondary" href="/my-bets">My Bets</Link>
     <Link className="button button--secondary" href="/markets">Back to markets</Link>
   </section>;
 
