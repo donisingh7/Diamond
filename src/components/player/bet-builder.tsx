@@ -10,6 +10,9 @@ import { Money } from "@/components/ui/money";
 import { NumberTile } from "@/components/ui/number-tile";
 import { GlassCard, GlassPanel } from "@/components/ui/surface";
 import { Tabs } from "@/components/ui/tabs";
+import { rupeesToPaise } from "@/lib/money";
+import { useBetTransaction } from "@/lib/ui/use-bet-transaction";
+import { BetReview } from "./bet-review";
 
 const jodiNumbers = Array.from({ length: 100 }, (_, index) => String(index).padStart(2, "0"));
 
@@ -23,8 +26,9 @@ function NumberPreview({ numbers, label }: { numbers: string[]; label: string })
   </div>;
 }
 
-export function BetBuilder() {
+export function BetBuilder({ marketSlug, marketName, timezone }: { marketSlug: string; marketName: string; timezone: string }) {
   const id = useId();
+  const transaction = useBetTransaction();
   const [method, setMethod] = useState<EntryInput["entryMethod"]>("JODI");
   const [numbers, setNumbers] = useState<string[]>([]);
   const [digits, setDigits] = useState("");
@@ -41,8 +45,10 @@ export function BetBuilder() {
   }
   const hasInput = method === "JODI" ? numbers.length > 0 : method === "CROSSING" ? !!digits : !!rawInput;
 
+  if (transaction.draft) return <BetReview transaction={{ ...transaction, edit: () => { transaction.edit(); requestAnimationFrame(() => document.getElementById(`${id}-heading`)?.focus()); } }} marketName={marketName} timezone={timezone} />;
+
   return <section id="bet-builder" className="stack bet-builder" aria-labelledby={`${id}-heading`}>
-    <div className="section-heading"><div><p className="eyebrow">Your numbers. Your combination.</p><h2 id={`${id}-heading`} className="type-section-title">Build your selections</h2></div><span className="builder-draft-label"><Layers3 size={16} aria-hidden="true" />Draft only</span></div>
+    <div className="section-heading"><div><p className="eyebrow">Your numbers. Your combination.</p><h2 id={`${id}-heading`} tabIndex={-1} className="type-section-title">Build your selections</h2></div><span className="builder-draft-label"><Layers3 size={16} aria-hidden="true" />Draft only</span></div>
     <div className="builder-layout">
       <GlassPanel className="builder-input-panel">
         <Tabs label="Bet entry method" value={method} onValueChange={value => { if (value === "JODI" || value === "CROSSING" || value === "COPY_PASTE") setMethod(value); }} items={[
@@ -67,6 +73,7 @@ export function BetBuilder() {
           <div className="builder-total" role="status" aria-live="polite" aria-atomic="true"><span>Estimated total</span><strong>{amount.totalPaise === undefined ? "—" : <Money paise={amount.totalPaise} />}</strong></div>
         </div>
         <p className="type-caption text-muted">Local draft only. Nothing is placed or saved. Final amounts and availability require server confirmation.</p>
+        <Button disabled={!!preview.error || !!amount.error || !amount.totalPaise} onClick={() => void transaction.review({ ...entry, marketSlug, stakePaise: rupeesToPaise(stake) })}>Review bet</Button>
       </GlassCard>
     </div>
   </section>;

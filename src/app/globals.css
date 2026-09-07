@@ -1,5 +1,35 @@
 @import "tailwindcss";
 
+/* Focused confirmation and the server-issued receipt share the existing materials. */
+.bet-confirmation { width: 100%; max-width: 620px; margin-inline: auto; scroll-margin-top: 28px; min-width: 0; }
+.bet-review { border-top: 3px solid var(--gaming-gold); }
+.bet-review .eyebrow { margin-bottom: 8px; }
+.bet-review h2 { margin-bottom: 12px; }
+.bet-facts { display: grid; gap: 16px; margin: 0; }
+.bet-facts > div { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+.bet-facts dt { color: var(--text-secondary); font-size: .8125rem; }
+.bet-facts dd { margin: 0; text-align: right; font-size: .875rem; min-width: 0; overflow-wrap: anywhere; }
+.bet-facts .money { white-space: normal; }
+.bet-facts .bet-payable { font-size: clamp(1.3rem,5vw,1.8rem); font-weight: 600; }
+.bet-total-row { padding-block: 20px; border-block: 1px solid var(--border); }
+.bet-quoted-numbers { max-height: 260px; overflow-y: auto; padding: 4px; }
+.bet-review-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.bet-review-actions .button { flex: 1 1 200px; }
+.bet-success-heading { display: grid; justify-items: center; gap: 12px; text-align: center; }
+.bet-success-icon { display: grid; place-items: center; width: 52px; height: 52px; border: 1px solid var(--gaming-gold); border-radius: 50%; color: var(--success); background: var(--ticket); }
+.bet-receipt { max-width: 480px; animation: bet-ticket-arrive 380ms ease-out both; }
+.bet-receipt .ticket-content { border-color: var(--gaming-gold); border-top-width: 3px; }
+.bet-receipt .ticket-section + .ticket-section { border-top-color: var(--gaming-gold); }
+.bet-receipt h3 { margin-bottom: 8px; }
+.bet-reference { font: 600 clamp(1.15rem,5vw,1.6rem)/1.5 var(--font-geist-mono),monospace; letter-spacing: .02em; margin: 4px 0 24px; }
+.bet-receipt-selections { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; list-style: none; padding: 0; margin: 16px 0 0; }
+.bet-receipt-selections li { display: grid; gap: 4px; padding: 10px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); text-align: center; }
+.bet-receipt-selections strong { font: 600 1.1rem var(--font-geist-mono),monospace; }
+.bet-receipt-selections .money { font-size: .75rem; white-space: normal; overflow-wrap: anywhere; }
+@keyframes bet-ticket-arrive { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+@media (max-width: 767px) { .bet-review { padding: 24px 20px; } .bet-review-actions { flex-direction: column-reverse; } .bet-review-actions .button { flex: auto; width: 100%; } }
+@media (prefers-reduced-motion: reduce) { .bet-receipt { animation: none; } }
+
 /* Window 4B1: local selection builders, using the shared Light/Dark materials. */
 .bet-builder { scroll-margin-top: 28px; }
 .builder-layout { display: grid; grid-template-columns: minmax(0,1.6fr) minmax(300px,1fr); gap: 24px; align-items: start; }
