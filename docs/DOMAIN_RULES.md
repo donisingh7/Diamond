@@ -1205,6 +1205,41 @@ implemented as the admin operations backend — not altered.
 - **No admin bet mutation.** The global admin bet list / detail (+ revision history) is READ
   ONLY — no route or service edits, deletes, or re-versions a `Bet` or `BetRevision`.
 
+### Window 7A1 implementation clarification (no business rule changed)
+
+The frozen "RESULT + SETTLEMENT" rules (compare each normalized selection against the winning
+number; `credit = stake × payoutMultiplierSnapshot`, stake not added back; `ACTIVE → WON/LOST`;
+idempotent; per-bet transactional; batch rather than one enormous transaction) are implemented
+as the settlement **core domain** — no admin route, no dashboard, no result correction, no
+cross-round orchestration (those are 7A2 / 6B).
+
+- **Result-gated.** `settleRound(roundId)` / `settleRoundBatch(roundId, batchSize)` throw
+  `RESULT_NOT_DECLARED` (422, new code) when the round has no `result`; nothing is read or
+  written. Declaration itself is unchanged (Window 6A2) and still never triggers settlement.
+- **Winning credit.** For each `ACTIVE` bet, the one selection whose `number === round.result`
+  (selections are a unique set, so at most one) is paid
+  `matchingSelection.stakePaise × bet.payoutMultiplierSnapshot` in integer paise via the
+  existing `creditAvailableInSession({ type: "WIN_CREDIT" })` primitive — `available += credit`,
+  one immutable `WIN_CREDIT` ledger row, key `WIN_CREDIT:<betId>`. A bet with no matching
+  selection goes `LOST` with `payoutPaise = 0` and no wallet movement. Every settled bet stores
+  `winningNumber = round.result` (a denormalised round snapshot) + `settledAt`.
+- **Snapshot faithful.** The multiplier is always `bet.payoutMultiplierSnapshot`; the current
+  `platformSettings.payoutMultiplier` is never read during settlement.
+- **Per-bet atomicity.** Each bet settles in its own Mongo transaction: the CAS
+  `updateOne({ _id, status: "ACTIVE" }, …)` and, for a winner, the `WIN_CREDIT` movement commit
+  or roll back together. A mid-round failure leaves earlier bets settled and the rest `ACTIVE`;
+  re-running resumes.
+- **Idempotent / concurrent-safe.** A rerun finds bets already terminal (CAS `matchedCount 0`)
+  and skips them; the unique `walletTransactions.idempotencyKey` makes a second `WIN_CREDIT`
+  physically impossible. Racing `settleRound` calls: one wins each bet CAS, the losers hit a
+  write conflict, retry under a fresh snapshot, see the terminal status and skip — no double
+  credit, no duplicate ledger row.
+- **Round lifecycle.** `settlementStatus` `PENDING`/`FAILED` → CAS `PROCESSING` → drain all
+  `ACTIVE` bets in `batchSize` chunks → CAS `PROCESSING → SETTLED` with `settledAt` and a
+  recomputed `settlementSummary` (`totalBets` / `winningBets` / `losingBets` / `totalStakePaise`
+  / `totalPayoutPaise`). A round already `SETTLED` replays its stored summary
+  (`alreadySettled: true`) with no money movement.
+
 ## USER-FACING BET REFERENCE
 
 Never expose Mongo ObjectId as the primary user-facing ticket/bet number.

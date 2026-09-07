@@ -10,6 +10,7 @@ import {
   prepareResultSchema,
   rejectWithdrawalSchema,
   resultStringSchema,
+  settleRoundSchema,
   setMarketStatusSchema,
   updateMarketScheduleSchema,
   updatePayoutRateSchema,
@@ -97,6 +98,31 @@ describe("prepareResultSchema / declareResultSchema", () => {
     expect(
       declareResultSchema.parse({ marketId, result: "07", confirm: true, clientRequestId: uuid }),
     ).toMatchObject({ marketId, result: "07", confirm: true });
+  });
+});
+
+describe("settleRoundSchema — Window 7A2 settlement trigger", () => {
+  const marketId = new Types.ObjectId().toHexString();
+
+  it("requires the literal confirm: true + a uuid; businessDate optional; strict", () => {
+    expect(settleRoundSchema.safeParse({ marketId, clientRequestId: uuid }).success).toBe(false);
+    expect(settleRoundSchema.safeParse({ marketId, confirm: false, clientRequestId: uuid }).success).toBe(false);
+    expect(settleRoundSchema.safeParse({ marketId, confirm: true, clientRequestId: "nope" }).success).toBe(false);
+    expect(settleRoundSchema.safeParse({ marketId: "xyz", confirm: true, clientRequestId: uuid }).success).toBe(false);
+    expect(settleRoundSchema.parse({ marketId, confirm: true, clientRequestId: uuid })).toMatchObject({
+      marketId,
+      confirm: true,
+    });
+    expect(
+      settleRoundSchema.parse({ marketId, businessDate: "2026-09-07", confirm: true, clientRequestId: uuid })
+        .businessDate,
+    ).toBe("2026-09-07");
+  });
+
+  it("has NO result field — a smuggled result is rejected (settlement never modifies the result)", () => {
+    expect(
+      settleRoundSchema.safeParse({ marketId, result: "07", confirm: true, clientRequestId: uuid }).success,
+    ).toBe(false);
   });
 });
 

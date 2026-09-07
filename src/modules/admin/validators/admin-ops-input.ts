@@ -132,6 +132,24 @@ export const declareResultSchema = z
   .strict();
 export type DeclareResultRequest = z.infer<typeof declareResultSchema>;
 
+// --- settlement trigger (Window 7A2) ------------------------------------------------
+
+/**
+ * `POST /api/admin/results/settle` — run settlement of ONE already-declared round. `confirm`
+ * MUST be the literal `true` so an empty/accidental body settles nothing. There is deliberately
+ * NO `result` field: settlement always runs against the number Window 6A2 recorded, and
+ * `.strict()` rejects any attempt to smuggle a different one through this route.
+ */
+export const settleRoundSchema = z
+  .object({
+    marketId: objectId,
+    businessDate: businessDate.optional(),
+    confirm: z.literal(true),
+    clientRequestId: uuid,
+  })
+  .strict();
+export type SettleRoundRequest = z.infer<typeof settleRoundSchema>;
+
 // --- payout rate --------------------------------------------------------------------
 
 /**

@@ -31,6 +31,9 @@ export const auditActions = [
   "MARKET_SCHEDULE_UPDATED",
   "RESULT_DECLARED",
   "PAYOUT_RATE_UPDATED",
+  // Window 7A2 — admin settlement orchestration. One row per round that an admin actually
+  // carried to `SETTLED`; a harmless replay of the trigger adds no further row.
+  "ROUND_SETTLED",
 ] as const;
 export type AuditAction = (typeof auditActions)[number];
 
