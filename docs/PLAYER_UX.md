@@ -1,5 +1,13 @@
 # Player experience
 
+## Window 4B1 — local selection builders
+
+`/play` continues to the market selector. Market detail provides a **Build selections** anchor and an inline builder, including for unavailable markets as an explicitly unplaced draft. The existing server availability and schedule remain visible above it.
+
+Jodi exposes all `00–99` as keyboard-operable pressed buttons. Crossing shows first-appearance unique digits and generated pairs; its examples are `428935` → 36 and `4428` → unique `4,2,8` → 9. Copy Paste accepts the existing engine's continuous digit strings or two-digit tokens separated by whitespace, commas or dots. Parsed input and resulting deduplicated selections are shown separately; Palti adds reversals in engine order and preserves leading zeros. Invalid input clears the resulting preview instead of displaying a partial wager.
+
+Method drafts and the common stake stay in component state while switching tabs. Clear selections clears only the active method's input. No draft persists after leaving the page. Compact number lists expand through native disclosures; desktop places the local summary beside the inputs, while mobile puts it in normal flow to preserve room for the keyboard and existing navigation. The same stake applies to all resulting numbers, with an integer-paise estimated total only when safe. No configured minimum, payout, balance sufficiency or betting eligibility is inferred locally. The draft explicitly states that nothing is placed or saved; server confirmation and all 4B2 actions remain deferred.
+
 ## Window 4B0 — appearance preference
 
 The approved primary experience is **Light**: luminous pearl/white surfaces, dark readable typography, polished gold Play actions, emerald OPEN indicators and framed result numbers. Dark remains an optional charcoal/champagne adaptation of the same components. This supersedes historical dark-primary design notes; no frozen betting rule changes.

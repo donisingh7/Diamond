@@ -1,5 +1,51 @@
 @import "tailwindcss";
 
+/* Window 4B1: local selection builders, using the shared Light/Dark materials. */
+.bet-builder { scroll-margin-top: 28px; }
+.builder-layout { display: grid; grid-template-columns: minmax(0,1.6fr) minmax(300px,1fr); gap: 24px; align-items: start; }
+.builder-input-panel,.builder-summary { min-width: 0; }
+.builder-draft-label { display: inline-flex; align-items: center; gap: 8px; color: var(--accent); font-size: .75rem; white-space: nowrap; }
+.builder-summary { position: sticky; top: 24px; display: flex; flex-direction: column; gap: 20px; border-top: 3px solid var(--gaming-gold); }
+.builder-summary .between { flex-wrap: wrap; gap: 8px; }
+.builder-summary p > svg { display: inline; vertical-align: middle; color: var(--success); }
+.builder-count { display: flex; align-items: baseline; gap: 12px; }
+.builder-count strong { font-family: var(--font-geist-mono),monospace; font-size: 3rem; line-height: 1; letter-spacing: -.06em; }
+.builder-count span { font-size: .875rem; color: var(--text-secondary); }
+.jodi-grid { display: grid; grid-template-columns: repeat(10,minmax(0,1fr)); gap: 6px; }
+.jodi-grid .number-tile { width: 100%; min-width: 0; height: 48px; min-height: 44px; }
+.jodi-grid .number-tile--selected { outline: 2px solid var(--accent); outline-offset: -2px; font-weight: 750; }
+.jodi-grid .number-tile:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.builder-number-preview,.builder-unique { display: grid; gap: 12px; }
+.builder-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; margin: 0; list-style: none; }
+.builder-chips > * { display: inline-grid; place-items: center; min-width: 36px; min-height: 34px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-elevated); color: var(--text-primary); font: .875rem var(--font-geist-mono),monospace; }
+.builder-unique .builder-chips > * { border-color: var(--accent); background: var(--accent-subtle); color: var(--accent); }
+.builder-disclosure summary { min-height: 44px; padding-block: 12px; cursor: pointer; font-size: .8125rem; color: var(--accent); }
+.builder-chips--expanded { max-height: 240px; overflow-y: auto; padding: 4px; }
+.builder-examples { display: flex; flex-wrap: wrap; gap: 8px; }
+.builder-examples > p { flex-basis: 100%; }
+.builder-textarea { width: 100%; min-width: 0; padding: 16px; resize: vertical; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--input); color: var(--text-primary); font: 1rem/1.6 var(--font-geist-mono),monospace; }
+.builder-textarea::placeholder { color: var(--text-muted); }
+.builder-textarea[aria-invalid="true"] { border-color: var(--danger); }
+.bet-builder .field { overflow-wrap: anywhere; }
+.builder-palti { display: flex; gap: 20px; justify-content: space-between; align-items: center; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--accent-subtle); cursor: pointer; }
+.builder-palti > span { display: grid; gap: 6px; }
+.builder-palti input { width: 24px; height: 24px; flex: 0 0 24px; accent-color: var(--accent); }
+.builder-stake { display: grid; gap: 20px; padding-top: 20px; border-top: 1px solid var(--border); }
+.builder-total { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px; font-size: .875rem; }
+.builder-total strong { font-size: 1.4rem; overflow-wrap: anywhere; min-width: 0; }
+@media (max-width: 1100px) { .jodi-grid { grid-template-columns: repeat(5,minmax(0,1fr)); } }
+@media (max-width: 850px) {
+  .builder-layout { grid-template-columns: minmax(0,1fr); }
+  .builder-summary { position: static; }
+  .jodi-grid { grid-template-columns: repeat(10,minmax(0,1fr)); }
+}
+@media (max-width: 600px) {
+  .jodi-grid { grid-template-columns: repeat(5,minmax(0,1fr)); gap: 8px; }
+  .bet-builder .section-heading { flex-wrap: wrap; gap: 12px; }
+  .bet-builder .tab-trigger { flex: 1 1 0; padding-inline: 6px; }
+  .bet-builder .tabs-list { overflow: visible; }
+}
+
 :root,[data-theme] {
   --glass-blur: 28px;
   --foreground: var(--text-primary); --muted: var(--text-muted); --surface-raised: var(--surface-elevated);

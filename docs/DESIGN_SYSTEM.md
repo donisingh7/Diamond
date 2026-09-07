@@ -1,5 +1,11 @@
 # Design direction
 
+## Window 4B1 — builder extension
+
+Market detail reuses Light-first glass panels, gold selected NumberTiles, Geist numeric typography, shared inputs and accessible Radix tabs. A gold-edged local selection summary accompanies the input panel on desktop and enters normal document flow on mobile. Jodi uses ten columns where space allows and five columns on small screens. Generated lists show twelve numbers initially, with a native keyboard-accessible disclosure for the complete list. Palti is a labeled native checkbox. All added colors use existing semantic tokens, including input/error/focus states; no theme, font or image dependency was added.
+
+The builders reuse unchanged pure normalization engines through a frontend preview adapter. Local stake arithmetic uses existing integer money helpers, suppresses invalid or unsafe totals, and makes no server eligibility or pricing claim. Browser validation remains pending because demo login returned HTTP 500; no visual, overflow or console smoke pass is claimed for this window.
+
 ## Current direction — Window 4B0
 
 **Light is the first-visit default; Dark is an explicit optional preference.** This approved requirement supersedes the historical dark-primary direction below. The shared system is a luminous betting terminal: pearl `#f6f5f0`, white surfaces, dark ink `#202923`, metallic gold `#e3c46e`, emerald OPEN `#176943`, and restrained warm reflections. Dark adapts the same materials to charcoal `#0d1110`, translucent green-charcoal glass and champagne. It is not the source palette inverted.

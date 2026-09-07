@@ -1,5 +1,11 @@
 # Implementation roadmap
 
+## Window 4B1 handoff — 2026-09-08
+
+**UI implemented; window INCOMPLETE pending browser smoke.** Built on `ecee9bd` on `codex-frontend`. `/play` retains market selection; each `/markets/[slug]` now includes Jodi, Crossing and Copy Paste with Palti, a common stake input and a clearly labeled local draft preview. Shared pure engines and integer money helpers are imported unchanged. No quote/placement requests, review ticket, wallet operations, bet editing or other 4B2 behavior was added. Backend/domain/API/schema/auth files are untouched.
+
+Quality gates each ran once and passed: typecheck, lint, 265 tests across 19 files, production build, and diff whitespace check. The requested 1440/375 browser smoke could not reach the protected route: the configured existing `test1` demo-account login returned HTTP 500 both with the sandboxed production server and after retrying outside the sandbox. No browser viewport checks or screenshots completed; console, theme and overflow browser verification remain pending. Temporary smoke tooling was removed and the task-started server stopped. Do not begin 4B2 automatically.
+
 ## Window 4B0 handoff — 2026-09-07
 
 **COMPLETE: Light-First Theme System + Gaming Visual Identity.** Frontend-only work from integrated baseline `ca18433` on `codex-frontend`. Light is the true first-visit default, Dark is header-accessible and explicitly persisted locally, and an early root initializer prevents theme flashing. Shared semantic palettes retrofit all implemented surfaces with luminous gaming materials. See DESIGN_SYSTEM.md and PLAYER_UX.md for architecture and QA evidence.
