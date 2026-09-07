@@ -16,7 +16,8 @@ export type ButtonProps = Omit<HTMLMotionProps<"button">, "children"> & {
 };
 export function Button({ variant = "primary", size = "md", loading = false, disabled, leadingIcon, trailingIcon, children, className, ...props }: ButtonProps) {
   const reduced = useReducedMotion();
-  return <motion.button type="button" {...props} className={cx("button", `button--${variant}`, `button--${size}`, className)} disabled={disabled || loading} aria-busy={loading || undefined} whileTap={reduced || disabled || loading ? undefined : { scale: 0.98 }} transition={springInteractive}>
+  // Motion auto-adds tabIndex for tap gestures. Keep it stable when reduced motion removes the gesture during hydration.
+  return <motion.button type="button" {...props} tabIndex={props.tabIndex ?? 0} className={cx("button", `button--${variant}`, `button--${size}`, className)} disabled={disabled || loading} aria-busy={loading || undefined} whileTap={reduced || disabled || loading ? undefined : { scale: 0.98 }} transition={springInteractive}>
     <span className={cx("button-content", loading && "button-content--loading")}>{leadingIcon}<span>{children}</span>{trailingIcon}</span>
     {loading && <span className="button-loader"><LoaderCircle className="spinner" aria-hidden="true" /><span className="sr-only">Loading</span></span>}
   </motion.button>;

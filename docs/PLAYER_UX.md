@@ -126,3 +126,15 @@ Only a static holding page at `/` exists in Window 1. It does not claim login, a
 Market builder and slip consume persisted round timings, configured current rate and server quotes; countdowns never decide eligibility. In the final hour, communicate that new bets remain available while existing bets cannot be edited. Preserve the original entry method and raw composition when loading an edit. The same publicRef survives all versions; display revision history from betRevisions.
 
 Wallet presents available and reserved separately. Mock deposit clearly labels prototype credit, withdrawals visibly remain pending until decision, and cancel is available only while pending. My Bets, Wins, Results and transaction history derive from canonical collections. No separate wins/resultHistory/transactionHistory collections and no permanent stored ticket files.
+
+## Window 3B — implemented player read experience
+
+Authenticated `/` now shows the real player name, available wallet balance, market overview and today's operational results. `/markets` is the market selector (all/open-now); `/markets/[slug]` displays the persisted round's opening, editing cutoff and closing timestamps, server lifecycle state, countdown and separate betting availability. Explicit day/month information preserves the next-day close of an overnight round. No client market-time calculation, bet-entry controls or fake placement operation is introduced.
+
+`/results` consumes `/api/results` with Today / 7 days / 30 days and optional market filtering from `/api/markets`. Filters are kept in URL parameters for direct links and browser history; changing filters never mixes old and new response data. Today means operational rounds, including the previous business date for a still-open overnight round. History shows only declared results in the server-selected calendar period. Result strings such as `00` and `07` render verbatim, while `null` is explicitly shown as no declared result. Loading, failure/retry, empty history and unknown-market states have distinct presentations.
+
+The protected shell reads `/api/wallet` and shows the available balance; Home also explains any reserved balance separately. No full wallet/deposit/withdrawal page is implemented. `/wallet` and `/my-bets` are honest future-release destinations so navigation does not lead to 404s. The profile dropdown retains real logout. Mobile central Play and the old `/play` path lead to `/markets` until Window 4B.
+
+Data refreshes every 30 seconds while visible and on return to the page. Countdowns use server time plus monotonic elapsed time, remain advisory, and never replace server eligibility checks. New bets remain server-allowed during CLOSING_SOON while editing is locked; the detail page explains this distinction without providing a bet form. Unknown markets display a recovery path to the selector. An expired API session returns the visitor to login.
+
+Window 4B betting composition, bet editing, review/success receipts and downloads remain unimplemented. See DESIGN_SYSTEM.md's Window 2A-V / 3B section for material and responsive decisions and verification status.
