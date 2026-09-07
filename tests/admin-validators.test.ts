@@ -174,7 +174,7 @@ describe("toAdminWalletTransactionDTO", () => {
 });
 
 describe("audit-log service", () => {
-  it("declares exactly the Window 6A1 + 6A2 admin actions", () => {
+  it("declares exactly the Window 6A1 + 6A2 + 7A2 admin actions", () => {
     expect([...auditActions]).toEqual([
       "PLAYER_CREATED",
       "PLAYER_DISABLED",
@@ -190,6 +190,7 @@ describe("audit-log service", () => {
       "MARKET_SCHEDULE_UPDATED",
       "RESULT_DECLARED",
       "PAYOUT_RATE_UPDATED",
+      "ROUND_SETTLED",
     ]);
   });
 
