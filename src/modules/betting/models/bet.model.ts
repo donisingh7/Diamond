@@ -32,6 +32,8 @@ betSchema.index({ userId: 1, createdAt: -1 });
 betSchema.index({ marketRoundId: 1, status: 1 });
 betSchema.index({ marketId: 1, createdAt: -1 });
 betSchema.index({ userId: 1, clientRequestId: 1 }, { unique: true });
+// Window 6A2: global admin bet list, newest first with a stable (createdAt, _id) cursor.
+betSchema.index({ createdAt: -1, _id: -1 });
 /** Type-only exports (no schema/index change). `version` is the domain version, distinct from Mongoose `__v`. */
 export type BetRecord = InferSchemaType<typeof betSchema>;
 export type BetDoc = HydratedDocument<BetRecord>;

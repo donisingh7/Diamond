@@ -545,3 +545,81 @@ deny-list — the freed `loginId` may later back a brand-new account.
 **Not in 6A1** (Window 6A2 / later): admin withdrawal approve/reject routes, market config
 mutations, result declaration, game-rate API, a full admin audit browser, settlement. The
 Window 5A internal withdrawal decision primitives are unchanged and unrouted.
+
+## Window 6A2 - implemented admin operations contract
+
+Sixteen route files under `src/app/api/admin/` (`withdrawals`, `markets`, `results`, `settings`,
+`audit`, `dashboard`, `bets`). All `apiRoute`-wrapped with the shared `{data:...}` /
+`{error:{code,message}}` shape; all `requireAdmin()` (anonymous -> `401`, PLAYER -> `403`); all
+`export const dynamic = "force-dynamic"`. Every mutation (`POST`) also requires a trusted
+`Origin` (`403` on mismatch); the `GET`s are exempt. Every response carries `serverNow`. The
+acting admin is always the session - no admin id / role from the client.
+
+| Route | Request (`.strict()`) | `200` `data` | Notable errors |
+| --- | --- | --- | --- |
+| `GET /api/admin/withdrawals` | `?status`, `?method`, `?search`, `?dateFrom`, `?dateTo`, `?limit` 1-100 (25), `?cursor` | `{ withdrawals: AdminWithdrawalListItem[], nextCursor, serverNow }` | `401`, `403`, `INVALID_INPUT` |
+| `GET /api/admin/withdrawals/[id]` | 24-hex id | `{ withdrawal: AdminWithdrawalDetail, serverNow }` | `401`, `403`, `WITHDRAWAL_NOT_FOUND` |
+| `POST /api/admin/withdrawals/[id]/approve` | `{ confirmPaid: true, clientRequestId: uuid, paymentReference?, note? }` | `{ withdrawal: AdminWithdrawalListItem, idempotentReplay, serverNow }` | `401`, `403` (also cross-origin), `INVALID_INPUT` (400 - missing/false `confirmPaid`, non-uuid, stray), `WITHDRAWAL_NOT_FOUND`, `WITHDRAWAL_NOT_PENDING` (409), `DUPLICATE_REQUEST` (409) |
+| `POST /api/admin/withdrawals/[id]/reject` | `{ reason, clientRequestId: uuid, note? }` | `{ withdrawal, idempotentReplay, serverNow }` | as approve, plus `INVALID_INPUT` for an empty `reason` |
+| `GET /api/admin/markets` | `?enabled=true\|false` | `{ markets: AdminMarketDTO[], serverNow }` | `401`, `403` |
+| `GET /api/admin/markets/[id]` | 24-hex id | `{ market: AdminMarketDTO, serverNow }` | `401`, `403`, `MARKET_NOT_FOUND` |
+| `POST /api/admin/markets/[id]/status` | `{ enabled: boolean }` | `{ market: AdminMarketDTO, serverNow }` | `401`, `403` (also cross-origin), `MARKET_NOT_FOUND` |
+| `POST /api/admin/markets/[id]/schedule` | `{ openTime?: HH:MM, closeTime?: HH:MM, closeDayOffset?: 0\|1, editLockMinutesBeforeClose?: int }` (>= 1 field) | `{ market: AdminMarketDTO, serverNow }` | `401`, `403` (also cross-origin), `MARKET_NOT_FOUND`, `INVALID_INPUT` (400 - bad time format / stray / impossible resulting schedule / edit lock >= round length) |
+| `POST /api/admin/results/prepare` | `{ marketId: hex24, businessDate?: YYYY-MM-DD, result: 2-char string }` | `{ preview: ResultDeclarationPreview }` | `401`, `403` (also cross-origin), `MARKET_NOT_FOUND`, `ROUND_NOT_FOUND`, `RESULT_TOO_EARLY` (422 - now < closesAt), `INVALID_INPUT` (400 - bad result string) |
+| `POST /api/admin/results/declare` | `{ marketId, businessDate?, result, confirm: true, clientRequestId: uuid }` | `{ result: DeclaredResult }` | as prepare, plus `RESULT_ALREADY_DECLARED` (409), `DUPLICATE_REQUEST` (409), `INVALID_INPUT` (400 - missing/false `confirm`) |
+| `GET /api/admin/settings/rate` | none | `{ payoutMultiplier, currency, minimumStakePaise, serverNow }` | `401`, `403` |
+| `POST /api/admin/settings/rate` | `{ payoutMultiplier: int >= 1 }` | `{ payoutMultiplier, previousPayoutMultiplier, changed, currency, minimumStakePaise, serverNow }` | `401`, `403` (also cross-origin), `INVALID_INPUT` (400/422 - non-int / < 1 / > 1000) |
+| `GET /api/admin/audit` | `?action`, `?actorAdminId`, `?subjectUserId`, `?entityType`, `?dateFrom`, `?dateTo`, `?limit` 1-100 (25), `?cursor` | `{ logs: AdminAuditLogDTO[], nextCursor, serverNow }` | `401`, `403`, `INVALID_INPUT` |
+| `GET /api/admin/dashboard` | none | `AdminDashboard` (see below) | `401`, `403` |
+| `GET /api/admin/bets` | `?playerId`, `?market=<slug>`, `?status`, `?entryMethod`, `?businessDate`, `?dateFrom`, `?dateTo`, `?limit` 1-50 (20), `?cursor` | `{ bets: AdminBetDTO[], nextCursor, serverNow }` | `401`, `403`, `INVALID_INPUT`, `MARKET_NOT_FOUND` (unknown `?market`) |
+| `GET /api/admin/bets/[id]` | 24-hex `_id` or `publicRef` | `{ bet: AdminBetDetailDTO, serverNow }` | `401`, `403`, `BET_NOT_FOUND` |
+
+**DTOs.**
+`AdminWithdrawalListItem` = `{ id, player: { id, loginId, name }, method, amountPaise, status,
+destinationSummary (MASKED), rejectionReason: string|null, paymentReference: string|null,
+decidedByAdminId: string|null, requestedAt, decidedAt: string|null, createdAt, updatedAt }`.
+`AdminWithdrawalDetail` = list item + `{ decisionNote: string|null, payoutDestination, wallet:
+WalletView }` where `payoutDestination` is `{ method:"BANK", accountHolderName, accountNumber,
+ifsc, bankName: string|null }` **or** `{ method:"UPI", upiId }` - **returned by this one endpoint
+only**, never serialized anywhere else, never logged, never in an audit row.
+`AdminMarketDTO` = `{ id, name, slug, code, timezone, enabled, schedule: { openTime, closeTime,
+openTimeMinutes, closeTimeMinutes, closeDayOffset, editLockMinutesBeforeClose }, displayOrder,
+state, currentBusinessDate, currentRound: { id, businessDate, opensAt, editCutoffAt, closesAt,
+state, result: string|null, resultDeclaredAt: string|null, settlementStatus } | null }`.
+`ResultDeclarationPreview` = `{ market: { id, name, slug, code }, businessDate, closesAt,
+proposedResult, currentResult: string|null, alreadyDeclared, settlementStatus,
+settlementPerformed: false, warning, serverNow }` (no mutation).
+`DeclaredResult` = `{ market, businessDate, result, resultDeclaredAt, declaredByAdminId,
+closesAt, settlementStatus, settlementPerformed: false, idempotentReplay, serverNow }`.
+`AdminAuditLogDTO` = `{ id, action, entityType, entityId: string|null, actorAdminId,
+subjectUserId: string|null, before: object|null, after: object|null, createdAt }` - `before` /
+`after` re-redacted on read.
+`AdminBetDTO` = the sanitized `PlayerBetDTO` + `{ player: { id, loginId, name } }`;
+`AdminBetDetailDTO` = `AdminBetDTO` + `{ revisions: BetRevisionDTO[] }`. READ ONLY.
+`AdminDashboard` = `{ players: { active, disabled, total }, wallet: { totalAvailablePaise,
+totalReservedPaise }, withdrawals: { pendingCount, pendingAmountPaise }, betsToday: { count,
+totalStakePaise, sinceIso }, markets: AdminMarketStatusSummary[], results: { pending, declared },
+recentActivity: AdminAuditLogDTO[], serverNow }`.
+
+**Mark Paid & Approve (LOCKED V1 money-out).** The player requests a withdrawal (Window 5A moved
+`available -> reserved`, status PENDING). The admin transfers the money **outside Diamond**. Only
+**after** the real payment does the admin call `approve` with `confirmPaid: true` - the system
+then finalizes the reserved amount (`reserved -= X`, **available unchanged**), flips
+`PENDING -> APPROVED`, writes one immutable `WITHDRAWAL_APPROVED` ledger row + a
+`WITHDRAWAL_APPROVED` audit row, and records `decidedByAdminId` / `paymentReference` /
+`decisionNote` / `decisionRequestId` - all one MongoDB transaction. There is **no** real
+bank/UPI payout API and **no** second debit of available.
+
+**Idempotency & concurrency.** Approve / reject: DB-backed on `decisionRequestId` (unique sparse
+index) - an exact `(withdrawal, clientRequestId)` replay with the same payload returns the
+original; the same id for a different withdrawal / a materially different decision / the opposite
+operation is `DUPLICATE_REQUEST`. Concurrent approve||approve, reject||reject, approve||reject and
+player-cancel||admin-decision all resolve to exactly one terminal transition, one ledger row, one
+audit row, wallet conserved, reserved never negative (the Window 5A CAS on `status:"PENDING"`).
+Result declare: DB-backed on `resultDeclaredRequestId`; concurrent declaration by two admins ->
+one wins, one result, one audit.
+
+**No settlement in 6A2.** Result declaration records the winning number only. It never changes a
+`Bet` status, never writes `WIN_CREDIT`, never moves a wallet, and leaves `settlementStatus` at
+`PENDING`. Payout-rate changes affect only future bet placements; every existing
+`bets.payoutMultiplierSnapshot` is untouched. Settlement is Window 7A.

@@ -1076,3 +1076,149 @@ auth core changed.
 `GET /players/[id]/wallet/transactions`, `POST /players/[id]/wallet/credit`,
 `POST /players/[id]/wallet/debit`, `GET /players/[id]/bets`, `GET /players/[id]/withdrawals`.
 Anonymous → `401`, PLAYER → `403`. No admin id / role is read from the request.
+
+## Window 6A2: admin operations — withdrawal decisions, market config, result declaration, payout rate, audit browser, dashboard, global bet reads
+
+Backend / domain / API only — **no admin UI** (Codex owns Window 6B). Extends the `/api/admin/*`
+surface with 16 route files and 7 admin-ops services. See ADMIN_SPEC.md / API_CONTRACTS.md's
+"Window 6A2" sections for capability tables and exact shapes, DATABASE.md's "Window 6A2" section
+for the three additive fields + four additive indexes, and DOMAIN_RULES.md's "Window 6A2
+implementation clarification" for the frozen-rule mapping.
+
+### Module layout
+
+```
+src/modules/admin/
+  validators/admin-ops-input.ts        strict Zod for every 6A2 route
+  services/
+    pagination.ts                      shared opaque (at, _id) keyset cursor helper
+    admin-withdrawal.service.ts         list / sensitive detail / approve / reject (idempotent)
+    admin-market.service.ts             list / detail / enable-disable / schedule edit
+    admin-result.service.ts            prepareResultDeclaration / confirmResultDeclaration (two-step)
+    admin-settings.service.ts          getPayoutRate / updatePayoutRate (future-only)
+    admin-audit.service.ts             listAuditLogs (+ read-path re-redaction)
+    admin-dashboard.service.ts         getAdminDashboard (aggregates)
+    admin-bet.service.ts               listBetsForAdmin / getBetDetailForAdmin (READ ONLY)
+src/app/api/admin/{withdrawals,markets,results,settings,audit,dashboard,bets}/   16 route files
+```
+
+### Layering
+
+Handlers stay thin: `requireAdmin()` → (mutations) `isTrustedOrigin` → strict Zod → service →
+sanitized `{ data }`. Services own all logic / transactions / idempotency. The wallet is touched
+ONLY through the Window 4A2 core; `auditLogs` ONLY through `writeAuditLog`; `markets` /
+`marketRounds` / `platformSettings` writes are `updateOne` CAS inside `withTransaction`.
+
+### Withdrawal decisions (`admin-withdrawal.service.ts`)
+
+The financial transition is the **Window 5A `approveWithdrawalByAdmin` /
+`rejectWithdrawalByAdmin` primitive, not duplicated**. Those gained (a) optional decision
+metadata (`decisionRequestId` / `paymentReference` / `decisionNote`) merged into the terminal
+`$set`, and (b) an `onTransition(session)` hook run inside the terminal transaction right after
+the `status:"PENDING"` CAS succeeds — the admin service passes an in-session
+`writeAuditLog(...)` there, so the wallet move + status flip + audit row commit or roll back
+together.
+
+`approveWithdrawalOp` / `rejectWithdrawalOp`:
+1. resolve the withdrawal (24-hex → `WITHDRAWAL_NOT_FOUND`).
+2. **existing-success recovery FIRST** on `decisionRequestId` (unique sparse index): an exact
+   `(withdrawal, requestId)` match with the same admin / payment reference / note / reason
+   replays the original result; any mismatch — different withdrawal, opposite operation,
+   different reference — is `DUPLICATE_REQUEST`.
+3. if the withdrawal is already in the target terminal state (a concurrent decision won),
+   report success (retry-safe); if it reached the OTHER terminal state (approve-vs-reject, or a
+   player cancel), `WITHDRAWAL_NOT_PENDING`.
+4. run the 5A primitive with the metadata + the audit `onTransition` hook.
+5. an E11000 on `decisionRequestId` (a lost race) recovers via step 2 or maps to
+   `DUPLICATE_REQUEST`.
+
+Approve finalizes RESERVED only (`finalizeReservedInSession` → `WITHDRAWAL_APPROVED`,
+`available` delta `0`) — **available is never debited a second time** (it was debited once at
+the Window 5A request). Reject releases (`WITHDRAWAL_RELEASED`, `available += X`). The sensitive
+`payoutDestination` (`+paymentDetails` projection) is returned by `getWithdrawalDetailForAdmin`
+**only**; `toListItem` and the audit `after` snapshot carry the masked `destinationSummary`
+only.
+
+### Market config (`admin-market.service.ts`)
+
+`setMarketEnabled` — CAS `updateOne({ _id, enabled: !target })` in a transaction +
+`MARKET_ENABLED` / `MARKET_DISABLED` audit; idempotent (already-in-state → no-op, no second
+audit). No `marketRounds` write — emergency disable takes effect through the existing
+`resolveCurrentRound` / `getBettingWindow` server checks (a disabled market → `round: null` +
+`MARKET_DISABLED`, placement blocked).
+
+`updateMarketSchedule` — merge the supplied `HH:MM` / offset / edit-lock fields onto the current
+schedule, validate the result (`marketScheduleSchema` + "edit lock shorter than the round"),
+`updateOne` the `markets` config row + `MARKET_SCHEDULE_UPDATED` audit with safe before/after
+minute snapshots. **Persisted `marketRounds` are never touched** — `ensureMarketRound` snapshots
+`opensAt` / `editCutoffAt` / `closesAt` at round creation and never recomputes, so an existing
+round keeps its instants and only rounds created after the edit use the new schedule.
+
+### Result declaration (`admin-result.service.ts`) — two-step, NO settlement
+
+`prepareResultDeclaration` (step 1) validates admin / market / round / `now >= closesAt` /
+result syntax and returns a sanitized preview with an explicit "settlement has NOT occurred"
+warning — **no mutation**. `confirmResultDeclaration` (step 2) requires `confirm: true` +
+`clientRequestId`, then in one transaction: CAS `updateOne({ _id, result: { $exists: false } },
+{ $set: { result, resultDeclaredAt, declaredByAdminId, resultDeclaredRequestId } })` +
+`RESULT_DECLARED` audit. `result` is a two-char STRING (`/^\d{2}$/`, leading zero preserved, no
+numeric coercion). `settlementStatus` stays `PENDING`; **no `Bet` write, no `WIN_CREDIT`, no
+wallet movement** — settlement is Window 7A. A round that already has a `result` is
+`RESULT_ALREADY_DECLARED` (no unrestricted correction endpoint); an exact
+`(round, requestId, result)` replay returns the original (`idempotentReplay: true`); a
+conflicting request-id reuse is `DUPLICATE_REQUEST`; concurrent declaration by two admins → the
+CAS lets one win, the loser is `RESULT_ALREADY_DECLARED`.
+
+### Payout rate (`admin-settings.service.ts`)
+
+`getPayoutRate` reads the `platformSettings` singleton. `updatePayoutRate` validates a positive
+integer, `updateOne({ key: "platform" }, { $set: { payoutMultiplier } })` in a transaction +
+`PAYOUT_RATE_UPDATED` audit with before/after; an unchanged value is a no-op (`changed: false`,
+no audit). Bet placement already snapshots the live multiplier into
+`bets.payoutMultiplierSnapshot` at commit time, so the change is **future-only** — no existing
+`Bet` is read or rewritten, and Window 7A settlement will use each bet's stored snapshot.
+
+### Audit browser (`admin-audit.service.ts`)
+
+`listAuditLogs` — bounded, `{ createdAt: -1, _id: -1 }` keyset cursor, `action` / `actorAdminId`
+/ `subjectUserId` / `entityType` / date filters. `before` / `after` are re-run through
+`redactAuditSnapshot` on read (defence in depth over the write-time redaction) and the Mongoose
+`Map` snapshot normalized to a plain object — no password / hash / token / OTP / session secret
+can reach the DTO.
+
+### Dashboard (`admin-dashboard.service.ts`)
+
+`getAdminDashboard` — one `Promise.all` of counts + `$group` aggregates (player status counts,
+wallet balance sums, pending-withdrawal count + amount, today's IST bet count + stake) plus
+`getMarketsWithCurrentRounds` and the 10 most recent audit rows. Every value is a real query
+result; no per-row loop, no fabricated data.
+
+### Global bet reads (`admin-bet.service.ts`)
+
+`listBetsForAdmin` / `getBetDetailForAdmin` — reuse `toPlayerBetDTO` / `toBetRevisionDTO`
+(already sanitized) + a batch-loaded player summary. `{ createdAt: -1, _id: -1 }` keyset cursor;
+`playerId` / `market` / `status` / `entryMethod` / `businessDate` (resolved to that day's round
+ids) / date filters. Detail includes the full revision history. **READ ONLY** — there is no
+service or route that edits / deletes a `Bet` or a `BetRevision`.
+
+### Errors
+
+Added `RESULT_TOO_EARLY` (422) and `RESULT_ALREADY_DECLARED` (409). `DUPLICATE_REQUEST` (409),
+`WITHDRAWAL_NOT_PENDING` (409), `WITHDRAWAL_NOT_FOUND` / `MARKET_NOT_FOUND` / `ROUND_NOT_FOUND`
+/ `BET_NOT_FOUND` (404), `INVALID_INPUT` (400), `FORBIDDEN` / `UNAUTHENTICATED` reused verbatim.
+
+### Reuse of the withdrawal core
+
+`WithdrawalMutationOptions` gained `onTransition?(session)`; `AdminApproveWithdrawalInput` /
+`AdminRejectWithdrawalInput` gained `decisionRequestId?` / `paymentReference?` / `decisionNote?`;
+`applyTerminalTransition` now `await`s `onTransition` after the CAS. Nothing else in the Window
+5A withdrawal service changed — the player request / cancel paths are untouched.
+
+### Routes
+
+16 files, all `apiRoute` + `force-dynamic` + `requireAdmin()`; every `POST` also
+`isTrustedOrigin`. `GET /withdrawals`, `GET /withdrawals/[id]`,
+`POST /withdrawals/[id]/approve`, `POST /withdrawals/[id]/reject`, `GET /markets`,
+`GET /markets/[id]`, `POST /markets/[id]/status`, `POST /markets/[id]/schedule`,
+`POST /results/prepare`, `POST /results/declare`, `GET|POST /settings/rate`, `GET /audit`,
+`GET /dashboard`, `GET /bets`, `GET /bets/[id]`. Anonymous → `401`, PLAYER → `403`.

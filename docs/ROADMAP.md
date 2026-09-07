@@ -922,3 +922,154 @@ gitignored and was never staged; no URI, credential or hash was printed):
 No secret value (URI, `SESSION_SECRET`, DB credential, password, password hash, raw session
 cookie, raw OTP) was printed or committed at any point. All scratch drivers / inspection
 scripts were deleted before commit.
+
+## Window 6A2 handoff status
+
+Window 6A2 (admin operations — withdrawal decisions, market config, result declaration, payout
+rate, audit browser, dashboard, global bet reads) is complete. **Backend / domain / API only —
+no admin UI (Codex owns Window 6B), no settlement (Window 7A).** See ARCHITECTURE.md's
+"Window 6A2" section for the design, ADMIN_SPEC.md / API_CONTRACTS.md's "Window 6A2" sections for
+capabilities and exact shapes, DATABASE.md's "Window 6A2" section for the additive schema,
+DOMAIN_RULES.md's "Window 6A2 implementation clarification" for the frozen-rule mapping, and
+SECURITY_AND_AUTH.md's "Window 6A2" section.
+
+Implemented:
+
+- `src/modules/admin/services/admin-withdrawal.service.ts` — `listWithdrawalsForAdmin` (global,
+  newest-requested-first `(requestedAt, _id)` cursor; `status` / `method` / `search` / date
+  filters; player summary batch-loaded; MASKED destination only), `getWithdrawalDetailForAdmin`
+  (the ONLY path returning the raw `payoutDestination` + player wallet), `approveWithdrawalOp` /
+  `rejectWithdrawalOp` (existing-success recovery on `decisionRequestId` first → 5A primitive +
+  in-transaction audit via the new `onTransition` hook; approve finalises RESERVED only,
+  available never re-debited; reject releases; conflicting request-id reuse →
+  `DUPLICATE_REQUEST`).
+- `src/modules/admin/services/admin-market.service.ts` — `listMarketsForAdmin` /
+  `getMarketForAdmin` (by 24-hex id; schedule in `HH:MM` + minutes; current-round snapshot),
+  `setMarketEnabled` (CAS + `MARKET_ENABLED` / `MARKET_DISABLED`, idempotent, no `marketRounds`
+  write), `updateMarketSchedule` (merge + validate + `MARKET_SCHEDULE_UPDATED`; existing round
+  instants never rewritten).
+- `src/modules/admin/services/admin-result.service.ts` — `prepareResultDeclaration` (validate +
+  preview, no mutation, settlement-not-run warning) / `confirmResultDeclaration` (`confirm:true`
+  + `clientRequestId`; CAS write of `result` + metadata + `RESULT_DECLARED`; `RESULT_TOO_EARLY`
+  before `closesAt`, `RESULT_ALREADY_DECLARED` for a declared round, replay on
+  `resultDeclaredRequestId`; NO settlement side effects).
+- `src/modules/admin/services/admin-settings.service.ts` — `getPayoutRate` / `updatePayoutRate`
+  (validated, `PAYOUT_RATE_UPDATED` before/after, unchanged → no-op; future-only — existing
+  `bets.payoutMultiplierSnapshot` never touched).
+- `src/modules/admin/services/admin-audit.service.ts` — `listAuditLogs` (bounded, filterable,
+  `(createdAt, _id)` cursor; `before` / `after` re-redacted on read; `Map` → object).
+- `src/modules/admin/services/admin-dashboard.service.ts` — `getAdminDashboard` (one
+  `Promise.all` of counts + `$group` aggregates + market lifecycle + recent activity; no
+  fabricated data, no N+1).
+- `src/modules/admin/services/admin-bet.service.ts` — `listBetsForAdmin` / `getBetDetailForAdmin`
+  (READ ONLY; reuse of the sanitized player bet + revision DTO + a player summary; filters;
+  full revision history; no mutation surface).
+- `src/modules/admin/services/pagination.ts` — shared opaque `(at, _id)` keyset cursor helper.
+- `src/modules/admin/validators/admin-ops-input.ts` — strict Zod for all 16 routes
+  (`confirmPaid` / `confirm` are `z.literal(true)`; the result string is `/^\d{2}$/`).
+- `src/app/api/admin/` — 16 route files (`withdrawals` ×4, `markets` ×4, `results` ×2,
+  `settings/rate` GET+POST, `audit`, `dashboard`, `bets` ×2). All `apiRoute` + `force-dynamic`
+  + `requireAdmin()`; every `POST` also `isTrustedOrigin`.
+- `src/modules/withdrawals/models/withdrawal.model.ts` — **+ `decisionRequestId`
+  (`{ unique, sparse }`), + `paymentReference` (≤ 200), + `decisionNote` (≤ 500),
+  + `{ requestedAt: -1, _id: -1 }` index**. Additive.
+- `src/modules/markets/models/market-round.model.ts` — **+ `resultDeclaredRequestId`
+  (`{ unique, sparse }` index)**. Additive.
+- `src/modules/betting/models/bet.model.ts` — **+ `{ createdAt: -1, _id: -1 }` index**. Additive.
+- `src/modules/withdrawals/services/withdrawal.service.ts` — `WithdrawalMutationOptions` gained
+  `onTransition?(session)`; the admin approve/reject inputs gained optional
+  `decisionRequestId` / `paymentReference` / `decisionNote`; `applyTerminalTransition` awaits
+  `onTransition` after the CAS. Player request / cancel paths unchanged.
+- `src/modules/audit/services/audit-log.service.ts` — `auditActions` + `WITHDRAWAL_APPROVED`,
+  `WITHDRAWAL_REJECTED`, `MARKET_ENABLED`, `MARKET_DISABLED`, `MARKET_SCHEDULE_UPDATED`,
+  `RESULT_DECLARED`, `PAYOUT_RATE_UPDATED`.
+- `src/lib/errors/domain-error.ts` — + `RESULT_TOO_EARLY` (422), `RESULT_ALREADY_DECLARED` (409).
+
+Deliberately **not** done (out of window): the settlement engine, `Bet` WON/LOST transition,
+`WIN_CREDIT`, payout wallet credits, settlement batching / summary (all Window 7A); any admin UI
+(Window 6B, Codex); any new collection; any change to the OTP / auth / provisioning
+architecture; any frontend file.
+
+## Verification record - 2026-09-07 (Window 6A2)
+
+| Check | Result |
+| --- | --- |
+| `npm.cmd run typecheck` | PASS; strict TypeScript incl. the 7 new admin-ops services, validators, 16 routes and 2 new test files |
+| `npm.cmd run lint` | PASS; no warnings |
+| `npm.cmd test` | PASS; 265 tests across 19 files (232 prior + 33 new in `admin-ops-validators.test.ts`; 1 prior `auditActions` test updated for the 7 new actions) |
+| `npm.cmd run test:integration` | PASS; 232 tests across 11 files (202 prior + 30 new in `admin-ops.integration.ts`) against a disposable MongoDB 8.2.6 replica set |
+| `npm.cmd run build` | PASS; all 16 `/api/admin/...` routes registered as dynamic handlers |
+| `git diff --check` | PASS; no whitespace errors |
+| Real HTTP verification | PASS — 43/43 assertions (disposable replica set + real `next dev`) |
+| Configured Atlas | **untouched** — no destructive script, no market/result/rate/withdrawal state mutation; the 4 additive indexes were NOT applied there |
+
+New unit coverage (`admin-ops-validators.test.ts`, 33 tests): `approveWithdrawalSchema` rejects
+a missing / `false` / `"true"` `confirmPaid`, a non-uuid `clientRequestId` and any stray field,
+trims optional metadata; `rejectWithdrawalSchema` requires a non-empty bounded `reason`;
+`resultStringSchema` accepts `"00"` / `"07"` / `"70"` / `"99"` and rejects `"0"` / `"7"` /
+`"100"` / `"ab"` / `""` (stays a string, never coerced); `declareResultSchema` requires the
+literal `confirm: true`; `updateMarketScheduleSchema` validates `HH:MM`, `closeDayOffset ∈ {0,1}`,
+a non-negative int edit lock, requires ≥ 1 field, rejects strays; `updatePayoutRateSchema` is a
+positive int ≤ 1000; the list query schemas default their limit, bound `[1, max]`, enum-check
+filters and reject stray params; the shared keyset cursor round-trips and rejects a malformed
+cursor with `INVALID_INPUT`; `toAdminAuditLogDTO` re-redacts secret-bearing keys at any depth
+and normalizes a `Map` snapshot.
+
+New integration coverage (`admin-ops.integration.ts`, 30 tests, disposable replica set):
+
+- **withdrawal list / detail** — newest-requested-first; player summary; `status` / `method` /
+  `search` filters; `(requestedAt, _id)` cursor across pages; a list payload contains **no** raw
+  account number and no `payoutDestination`; detail — and only detail — returns the raw BANK
+  `payoutDestination` + the player wallet.
+- **approve** — `PENDING → APPROVED`, `reserved -= 30_000`, **`available` unchanged at 70_000**
+  (the proof), exactly one `WITHDRAWAL_APPROVED` ledger row (`availableDelta 0`,
+  `reservedDelta -30_000`), exactly one `WITHDRAWAL_APPROVED` audit (no account number in it),
+  `decidedByAdminId` / `paymentReference` / `decisionNote` stored; an exact replay →
+  `idempotentReplay`, still one ledger / one audit; same id + different reference, or reused for
+  another withdrawal → `DUPLICATE_REQUEST`; a cancelled withdrawal → `WITHDRAWAL_NOT_PENDING`.
+- **reject** — `reserved -= X` / `available += X` back to the opening balance, stored reason,
+  one `WITHDRAWAL_RELEASED` ledger + one `WITHDRAWAL_REJECTED` audit; an empty reason →
+  `INVALID_INPUT`; approve-then-reject under the same id → `DUPLICATE_REQUEST`.
+- **concurrency** — approve‖approve (distinct ids) → one transition / one ledger / one audit,
+  `available` unchanged; reject‖reject → release exactly once, one terminal `REJECTED`;
+  approve‖reject → exactly one wins, wallet matches the winner, `approved + released ledger = 1`,
+  reserved ≥ 0; player-cancel‖admin-approve → exactly one terminal transition, reserved 0,
+  wallet conserved, exactly one release/finalise ledger row.
+- **markets** — disable is server-authoritative (`placeBet` → `MARKET_DISABLED`), audited,
+  idempotent (no second audit); re-enable restores placement; an impossible schedule and an
+  over-long edit lock → `INVALID_INPUT`; Disawar `closeDayOffset 1` accepted + persisted
+  (`closeTimeMinutes 210`); **a schedule change leaves an existing `MarketRound`'s
+  `opensAt` / `editCutoffAt` / `closesAt` byte-identical** while a future-dated round uses the
+  new `18:30` close; list / detail expose config + current round + `serverNow` by id.
+- **results** — preview does not mutate and writes no audit; before close → `RESULT_TOO_EARLY`,
+  exactly at close allowed; `"00"` / `"07"` / `"99"` declared as-is (string), one
+  `RESULT_DECLARED` audit, `settlementStatus` still `PENDING`, **the placed bet stays `ACTIVE`
+  with null `winningNumber` / `payoutPaise`, the player wallet is byte-identical, zero
+  `WIN_CREDIT` rows**; an exact confirm replay → `idempotentReplay` (one audit); a conflicting
+  result under the same id → `DUPLICATE_REQUEST`; a second declaration →
+  `RESULT_ALREADY_DECLARED`; two admins concurrently → exactly one wins, one result, one audit.
+- **payout rate** — read `90`; a valid update audits `{90}` → `{95}`; **Bet A placed before
+  keeps `payoutMultiplierSnapshot 90`, Bet B placed after gets `95`, Bet A is re-read and still
+  `90`** (no mass update); zero `WIN_CREDIT`; an invalid `0` / `1.5` → `INVALID_INPUT`; an
+  unchanged value → `changed: false` with no second audit.
+- **audit browser** — `action` / `actorAdminId` filters, `(createdAt, _id)` pagination; a row
+  inserted past the writer with `password` / `sessionSecret` / `token` keys comes back with
+  `[REDACTED]` and the raw values absent from the serialized page.
+- **dashboard** — exact aggregates against a known fixture: `players {active 2, disabled 1,
+  total 3}`, `wallet {available 122_000, reserved 15_000}`, `withdrawals {pendingCount 1,
+  pendingAmountPaise 15_000}`, `betsToday {count 1, stake 3_000}`, 6 markets, string `serverNow`.
+- **global bet reads** — list filters (`playerId` / `market` / `entryMethod` / `businessDate`);
+  detail returns the revision created by a real `editBet` (`fromVersion 1 → toVersion 2`) + the
+  player summary; the admin bet / withdrawal / market modules export **no** `updateBet` /
+  `deleteBet` / `settle*` / `creditWin` entry point; an unknown handle → `BET_NOT_FOUND`.
+
+Real HTTP verification used a **disposable** `mongodb-memory-server-core` replica set (seeded via
+`seedFoundation()` + one ACTIVE admin + one ACTIVE player) and a real `next dev` on a random
+port — the configured `.env` / database was never used; the temporary driver
+(`zz-http-verify-6a2.mts`) lived at the worktree root and was deleted before commit; no cookie /
+token / password / hash / DB URI / bank / UPI value was printed. 43 assertions, all PASS
+(enumerated in SECURITY_AND_AUTH.md's "Verified end-to-end (Window 6A2)").
+
+No configured Atlas destructive mutation was performed; the four additive indexes were not
+applied there. No frontend file was touched. No Window 6B (admin UI) or Window 7A (settlement /
+`WIN_CREDIT`) work was started.

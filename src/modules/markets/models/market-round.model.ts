@@ -15,6 +15,10 @@ export const marketRoundSchema = new Schema({
   result: twoDigit,
   resultDeclaredAt: Date,
   declaredByAdminId: optionalUserRef,
+  /** Window 6A2: the admin's client UUID for the two-step result declaration. A unique sparse
+   *  index makes a reuse across rounds collide; a replay with the same id + same result on the
+   *  same round returns the original declaration. NEVER a settlement trigger. */
+  resultDeclaredRequestId: { type: String, trim: true },
   settlementStatus: { type: String, enum: ["PENDING", "PROCESSING", "SETTLED", "FAILED"], default: "PENDING", required: true },
   settledAt: Date,
   settlementSummary: settlementSummarySchema,
@@ -30,5 +34,7 @@ marketRoundSchema.index({ marketId: 1, businessDate: 1 }, { unique: true });
 marketRoundSchema.index({ closesAt: 1 });
 // Cross-market result history: businessDate range scan across all markets, newest first.
 marketRoundSchema.index({ businessDate: 1, marketId: 1 });
+// Window 6A2: result-declaration idempotency backstop — one `resultDeclaredRequestId` across all rounds.
+marketRoundSchema.index({ resultDeclaredRequestId: 1 }, { unique: true, sparse: true });
 export type MarketRoundRecord = InferSchemaType<typeof marketRoundSchema>;
 export const MarketRound = modelFor("MarketRound", marketRoundSchema, "marketRounds");

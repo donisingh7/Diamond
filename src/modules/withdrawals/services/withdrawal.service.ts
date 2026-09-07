@@ -251,6 +251,13 @@ export type WithdrawalMutationOptions = {
   clock?: () => Date;
   /** Invoked inside the transaction right after the wallet movement, to force a rollback. */
   afterWalletMovement?: () => void;
+  /**
+   * Window 6A2 seam: invoked inside the terminal transaction immediately after the status
+   * compare-and-set succeeds (so it never runs on the idempotent-replay / lost-race paths).
+   * The admin operations service passes an in-session `writeAuditLog(...)` here so the wallet
+   * movement, the status flip and the audit row commit or roll back together.
+   */
+  onTransition?: (session: ClientSession) => Promise<void>;
 };
 
 type RequestFingerprint = { method: WithdrawalMethod; amountPaise: number; destinationSummary: string };
@@ -373,10 +380,12 @@ type TerminalTransition = {
   amountPaise: number;
   to: Exclude<WithdrawalStatus, "PENDING">;
   walletMove: WalletMove;
-  /** decidedByAdminId / rejectionReason — merged into the `$set`. */
+  /** decidedByAdminId / rejectionReason / decisionRequestId — merged into the `$set`. */
   extraSet?: Record<string, unknown>;
   clock: () => Date;
   afterWalletMovement?: () => void;
+  /** Run inside the transaction right after the CAS succeeds — see `WithdrawalMutationOptions`. */
+  onTransition?: (session: ClientSession) => Promise<void>;
 };
 
 /**
@@ -404,6 +413,7 @@ async function applyTerminalTransition(t: TerminalTransition): Promise<Date> {
       { session },
     );
     if (res.matchedCount !== 1) throw new DomainError("WITHDRAWAL_NOT_PENDING", NOT_PENDING_MESSAGE);
+    await t.onTransition?.(session);
     return now;
   });
 }
@@ -471,16 +481,34 @@ export async function cancelWithdrawal(
 
 // --- FUTURE ADMIN primitives — NOT exposed by any route in Window 5A (Window 6A routes these) --
 
+export type AdminDecisionMetadata = {
+  /** Persisted for Window 6A2 admin-decision idempotency (unique sparse index). */
+  decisionRequestId?: string;
+  /** Operator's out-of-Diamond payout reference (UTR / txn id) — approve only. */
+  paymentReference?: string;
+  /** Bounded operator note. */
+  decisionNote?: string;
+};
 export type AdminApproveWithdrawalInput = {
   withdrawalId: Types.ObjectId;
   adminId: Types.ObjectId;
-};
+} & AdminDecisionMetadata;
 export type AdminRejectWithdrawalInput = AdminApproveWithdrawalInput & { reason: string };
+
+/** Non-empty admin-decision metadata to merge into the terminal `$set` (undefined keys dropped). */
+function decisionSet(input: AdminDecisionMetadata): Record<string, unknown> {
+  const set: Record<string, unknown> = {};
+  if (input.decisionRequestId) set.decisionRequestId = input.decisionRequestId;
+  if (input.paymentReference) set.paymentReference = input.paymentReference;
+  if (input.decisionNote) set.decisionNote = input.decisionNote;
+  return set;
+}
 
 /**
  * ADMIN approve: `PENDING → APPROVED`, `reserved -= amount` (funds "paid out" — no real bank
  * transfer in the prototype), available UNCHANGED, one `WITHDRAWAL_APPROVED` ledger row. CAS on
- * `status: "PENDING"`. Idempotent: an already-APPROVED withdrawal returns its DTO.
+ * `status: "PENDING"`. Idempotent: an already-APPROVED withdrawal returns its DTO. Window 6A2
+ * passes decision metadata + an `onTransition` audit hook through `options`.
  */
 export async function approveWithdrawalByAdmin(
   input: AdminApproveWithdrawalInput,
@@ -498,9 +526,10 @@ export async function approveWithdrawalByAdmin(
       userId: current.userId,
       amountPaise: current.amountPaise,
       to: "APPROVED",
-      extraSet: { decidedByAdminId: input.adminId },
+      extraSet: { decidedByAdminId: input.adminId, ...decisionSet(input) },
       clock,
       afterWalletMovement: options.afterWalletMovement,
+      onTransition: options.onTransition,
       walletMove: (session, ctx) =>
         finalizeReservedInSession(
           {
@@ -560,9 +589,10 @@ export async function rejectWithdrawalByAdmin(
       userId: current.userId,
       amountPaise: current.amountPaise,
       to: "REJECTED",
-      extraSet: { decidedByAdminId: input.adminId, rejectionReason: reason },
+      extraSet: { decidedByAdminId: input.adminId, rejectionReason: reason, ...decisionSet(input) },
       clock,
       afterWalletMovement: options.afterWalletMovement,
+      onTransition: options.onTransition,
       walletMove: (session, ctx) =>
         releaseReservedInSession(
           {

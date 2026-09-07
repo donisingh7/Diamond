@@ -31,6 +31,14 @@ export const withdrawalSchema = new Schema({
   requestedAt: { type: Date, required: true, immutable: true },
   decidedAt: Date,
   decidedByAdminId: optionalUserRef,
+  /** Window 6A2 admin-decision idempotency + operational metadata. `decisionRequestId` is the
+   *  admin's client UUID for the terminal "Mark Paid & Approve" / reject; a unique sparse index
+   *  makes a reuse for a different withdrawal collide. `paymentReference` is the operator's
+   *  out-of-Diamond payout reference (UTR / txn id) on approve; `decisionNote` a bounded note.
+   *  None of these carry the sensitive `paymentDetails`. */
+  decisionRequestId: { type: String, trim: true },
+  paymentReference: { type: String, trim: true, maxlength: 200 },
+  decisionNote: { type: String, trim: true, maxlength: 500 },
 }, schemaOptions);
 withdrawalSchema.pre("validate", function () {
   const details = this.paymentDetails;
@@ -44,6 +52,10 @@ withdrawalSchema.pre("validate", function () {
 withdrawalSchema.index({ userId: 1, createdAt: -1 });
 withdrawalSchema.index({ status: 1, requestedAt: 1 });
 withdrawalSchema.index({ userId: 1, clientRequestId: 1 }, { unique: true });
+/** Window 6A2: global admin withdrawal list, newest requested first with a stable (requestedAt, _id) cursor. */
+withdrawalSchema.index({ requestedAt: -1, _id: -1 });
+/** Window 6A2: admin-decision idempotency backstop — a `decisionRequestId` is unique across all withdrawals. */
+withdrawalSchema.index({ decisionRequestId: 1 }, { unique: true, sparse: true });
 /** Type-only exports (no schema/index change). */
 export type WithdrawalRecord = InferSchemaType<typeof withdrawalSchema>;
 export type WithdrawalDoc = HydratedDocument<WithdrawalRecord>;
