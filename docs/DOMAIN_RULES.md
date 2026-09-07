@@ -474,6 +474,68 @@ idempotency, a human-readable non-ObjectId reference) are implemented, not alter
   `immutable` in the schema so it survives every future edit, and never regenerated on an
   idempotent replay. It is not returned until the transaction has committed.
 
+### Window 4A4 implementation clarification (no business rule changed)
+
+Bet editing (`PATCH /api/bets/:id`), immutable `betRevisions`, and the player bet **read**
+backend (`GET /api/bets`, `GET /api/bets/:id`). Backend / financial domain only — no My Bets /
+ticket / edit UI. The frozen rules above ("BET EDITING", "BET REVISIONS", the ₹1 minimum, no
+maximum, a bet cannot exceed available balance, the immutable payout snapshot, one wallet
+transaction per money movement) are implemented, not altered. The roadmap lists "My Bets" under
+Window 5; only its read **backend** is built here (no UI), which the Window 5 UI and the edit
+screen both need.
+
+- **Editing is same-identity.** An edit re-uses the SAME `normalizeBetEntry` engine as quote /
+  placement (never a second parser) and preserves `Bet._id`, `publicRef`, `userId`,
+  `marketId`, `marketRoundId` and `placedAt`. Only `version` advances (1 → 2 → 3 …) and
+  `lastEditedAt` is set. `PATCH /api/bets/:id` accepts only the entry method's raw input
+  (`numbers` / `digits` / `rawInput` + `palti`), `stakePaise`, `expectedVersion` and
+  `editRequestId` — a `.strict()` schema rejects every authoritative value and also `marketSlug`
+  (an edit cannot move a bet to another market/round — that would be a new bet).
+- **Payout multiplier is frozen at placement.** An edit NEVER re-reads
+  `platformSettings.payoutMultiplier`. `bet.payoutMultiplierSnapshot` is untouched by every
+  edit, so a bet placed at 90× stays 90× even if the admin rate is later 95×.
+- **Edit cutoff is server time, re-checked at the transactional boundary.** Editing is allowed
+  only while the bet is `ACTIVE` and `now < editCutoffAt` for the bet's OWN round
+  (`editCutoffAt = closesAt − 60 min`). The `getBettingWindow(...).canEditBet` gate is checked
+  before the transaction and **again inside it against a fresh clock** — a request that begins
+  before cutoff but commits at/after it fails `EDIT_WINDOW_CLOSED` (or `MARKET_CLOSED` past
+  close), with no change. New bet placement is unaffected and still runs until close.
+- **One revision per successful edit, immutable.** Each edit writes exactly one `betRevisions`
+  row: `betId`, `userId`, `fromVersion`, `toVersion`, full `before` / `after` canonical wager
+  snapshots (`entryMethod`, `entryMetadata`, `selections`, `totalStakePaise`), `walletDeltaPaise`
+  (`before.total − after.total`, schema-enforced), `editRequestId`, `editedAt`. Initial placement
+  has no revision; the first edit creates `1 → 2`. History is exposed through the bet detail
+  response (`revisions[]`, oldest first) — no `betId` / `userId` / `editRequestId` / Mongo `_id`
+  in the DTO.
+- **Wallet moves the difference only.** `stakeDelta = newTotalStakePaise − oldTotalStakePaise`.
+  Positive → a single `BET_EDIT_DEBIT` of exactly `stakeDelta`; negative → a single
+  `BET_EDIT_REFUND` of exactly `−stakeDelta`; zero → **no** wallet movement (the revision is
+  still written). The whole bet is never refunded and re-debited. Keys are deterministic —
+  `BET_EDIT_DEBIT:<betId>:v<toVersion>` / `BET_EDIT_REFUND:<betId>:v<toVersion>`.
+- **One transaction, no partial success.** Re-read + re-validate the bet / round → wallet
+  delta + ledger row → CAS `Bet` update (`version`/`status` filter) → `betRevisions` insert
+  commit or roll back together. An insufficient balance, a market-state failure, a stale
+  version or any later failure leaves the bet, its version, the wallet and the ledger unchanged
+  and writes no revision.
+- **Optimistic concurrency on `version`.** The request carries `expectedVersion`; the
+  in-session re-read plus a compare-and-set `updateOne({ version: expectedVersion, status:
+  "ACTIVE" })` plus the unique `betRevisions (betId, toVersion)` index mean two edits racing
+  from the same version cannot both win — the loser gets `STALE_VERSION` (409), never a silent
+  overwrite. A stale `expectedVersion` is `STALE_VERSION` before any wallet movement.
+- **`editRequestId` idempotency.** Backed by the unique `betRevisions (userId, editRequestId)`
+  index. A retry of the *same* logical edit (same target canonical wager) returns the
+  ALREADY-APPLIED bet — no second wallet movement, no second version bump — and does so
+  **before** the cutoff re-check, so a replay after cutoff still returns the previous successful
+  result rather than `EDIT_WINDOW_CLOSED`. The same id reused for a *different* target wager is
+  `DUPLICATE_REQUEST` (409).
+- **Reads are owner-only.** `GET /api/bets` returns only the caller's bets, newest first,
+  always bounded (`limit` 1–50, default 20, opaque cursor). `GET /api/bets/:id` resolves the
+  bet's `id` handle OR its `publicRef` and 404s (`BET_NOT_FOUND`) for a missing OR non-owned
+  bet identically — knowing a `publicRef` never grants access. `canEditNow` is
+  `getBettingWindow` for the bet's own round; `result` is the round's; settlement fields
+  (`winningNumber` / `payoutPaise` / `settledAt`) are `null` until the settlement engine exists
+  and are never fabricated.
+
 ## BET EDITING
 
 A player may edit the ENTIRE bet until:
@@ -722,6 +784,59 @@ Maximum:
 ```text
 available balance
 ```
+
+### Window 5A implementation clarification (no business rule changed)
+
+The frozen withdrawal rules above (BANK / UPI, the four states, request reserves
+available→reserved, player cancel only while PENDING, admin reject releases, admin approve
+finalises, ₹1 minimum, maximum = available balance, no real payout) are implemented as the
+**player** lifecycle plus reusable admin primitives. Nothing was altered.
+
+- **Request is one atomic transaction.** `requestWithdrawal` validates an ACTIVE PLAYER + the
+  Zod-checked request, ensures a ₹0 wallet, then in ONE Mongo transaction: `reserveInSession`
+  (`available -= X`, `reserved += X`, one immutable `WITHDRAWAL_RESERVED` ledger row) → native
+  insert of the `PENDING` `withdrawals` document. Any failure — below-min amount, insufficient
+  available balance, a write error — leaves **no** withdrawal, **no** wallet change and **no**
+  ledger row. The maximum is enforced by the reserve primitive (`INSUFFICIENT_BALANCE` when
+  `available < X`), not a product constant; the ₹1 minimum is `assertWithdrawalAmount`
+  (`INVALID_AMOUNT` below ₹1, `MONEY_OUT_OF_RANGE` beyond safe-integer precision).
+- **Reserved funds are inert.** They cannot fund a bet, another withdrawal or a normal admin
+  debit, and they stay reserved for the whole PENDING lifetime (the Window 4A2 available/reserved
+  split does this — no new mechanism).
+- **Every terminal transition is atomic and compare-and-set.** Cancel / reject / approve each
+  run one transaction that moves the wallet through a Window 4A2 primitive AND flips the status
+  with `updateOne({ status: "PENDING" }, …)`. `matchedCount 0` (a concurrent transition already
+  won) aborts the whole transaction, rolling the wallet movement back with it. There is never a
+  "withdrawal changed but wallet didn't", or the reverse.
+  - **cancel** (player, own PENDING only): `PENDING → CANCELLED`, `available += X`,
+    `reserved -= X`, one `WITHDRAWAL_RELEASED` row. The withdrawal is **not** deleted. An
+    already-CANCELLED withdrawal returns its DTO with no second release; APPROVED / REJECTED is
+    `WITHDRAWAL_NOT_PENDING` (409).
+  - **reject** (future admin — primitive only, NOT routed in 5A): `PENDING → REJECTED` + stored
+    reason, `available += X`, `reserved -= X`, one `WITHDRAWAL_RELEASED` row.
+  - **approve** (future admin — primitive only, NOT routed in 5A): `PENDING → APPROVED`,
+    `reserved -= X` only, available unchanged, one `WITHDRAWAL_APPROVED` row. No real bank/UPI
+    payout occurs.
+- **Idempotency.** The request carries a client UUID `clientRequestId`; a unique
+  `(userId, clientRequestId)` index is the backstop. A retry with the same logical request
+  (method + amount + destination) returns the ORIGINAL withdrawal — no second reserve, no
+  duplicate ledger row; a conflicting payload under the same id is `DUPLICATE_REQUEST` (409).
+  Two simultaneous identical requests resolve to one withdrawal / one reserve / one ledger row.
+  Cancellation idempotency is deterministic on the withdrawal's own state plus the deterministic
+  `WITHDRAWAL_RELEASED:<withdrawalId>` ledger key — a retried or raced cancel releases the
+  reserved money exactly once and reserved balance never goes negative.
+- **Ledger keys** follow the established `<TYPE>:<entityId>` scheme:
+  `WITHDRAWAL_RESERVED:<withdrawalId>` (request), `WITHDRAWAL_RELEASED:<withdrawalId>`
+  (cancel / reject — mutually exclusive, so the shared key is safe), `WITHDRAWAL_APPROVED:<withdrawalId>`
+  (approve). `referenceType` is `"WITHDRAWAL"`, `referenceId` the withdrawal `_id`.
+- **Sensitive payout details.** `withdrawals.paymentDetails` (account number / IFSC / UPI id) is
+  written once and `select: false`; player list / detail / cancel responses never read or
+  return it. Every response carries only a pre-masked `destination.summary`
+  (`"HDFC Bank ••••1234"` / `"ra••@okhdfcbank"`), stored denormalised as `destinationSummary`.
+  The duplicated `confirmAccountNumber` a BANK request carries is validated for equality and
+  never persisted. At-rest **encryption** of `paymentDetails` is NOT part of the current
+  prototype architecture (DATABASE.md only requires "excluded from ordinary queries"); it is
+  recorded as future production hardening, not invented here as a weak custom scheme.
 
 ## RESULT + SETTLEMENT
 
@@ -983,6 +1098,54 @@ actorAdminId
 ```
 
 may remain only if it contains no deleted player identifier/name/login/phone/entity reference capable of linking back to them.
+
+### Window 6A1 implementation clarification (no business rule changed)
+
+The frozen rules above (₹0 wallet on player creation with any opening balance as a separate
+audited movement; complete hard-delete purge with no tombstone / deny-list; redacted admin audit
+on every meaningful action; the ten wallet transaction types; no negative balances; reserved is
+never spendable; every movement ledgered; no independent ledger / bet editing) are implemented,
+not altered.
+
+- **LOCKED V1 money-in flow — manual, no gateway.** There is no payment gateway, no Razorpay, no
+  UPI collect, no async settlement in V1. A player pays the admin **outside Diamond**
+  (UPI / cash / bank), the admin verifies that payment, then credits the Diamond wallet through
+  `POST /api/admin/players/[id]/wallet/credit`, and the system records an immutable `ADMIN_CREDIT`
+  (`available += amount`). `paymentReference` (a UTR / txn id) and a required `reason` are stored
+  on the ledger row and the audit row. Mock Deposit (`MOCK_DEPOSIT`) remains a separate
+  prototype-only player convenience and is unrelated to this operational flow.
+- **`ADMIN_DEBIT` is the correction mirror.** Manual reversal of an accidental credit or a
+  controlled adjustment: `available -= amount`, never below zero (`INSUFFICIENT_BALANCE`),
+  `reserved` untouched. The earlier ledger row is never edited or deleted — a correction is a new
+  compensating `ADMIN_DEBIT` row with its own reason.
+- **Money-out is unchanged and stays Window 5A / 6A2.** Withdrawal request still moves
+  `available → reserved` immediately (PENDING). 6A1 exposes NO admin approve / reject route; the
+  Window 5A internal `approveWithdrawalByAdmin` / `rejectWithdrawalByAdmin` primitives are
+  untouched and Window 6A2 will route them under "Mark Paid & Approve" (approval finalizes
+  RESERVED only — never a second debit of available).
+- **Admin wallet movement is atomic and idempotent.** wallet balance change + immutable
+  `walletTransactions` row + redacted `auditLogs` row are one MongoDB transaction — any failure
+  moves no money. The resulting balance is computed by the wallet core, never accepted from the
+  client. Idempotency key `ADMIN_WALLET_ADJUSTMENT:<adminId>:<clientRequestId>` is
+  operation-agnostic: an exact replay returns the original receipt; the same request id with a
+  different player / operation / amount / reason / reference is `DUPLICATE_REQUEST` (backed by the
+  unique `idempotencyKey` index, not an in-memory check).
+- **Admin player lifecycle.** Create forces `role: PLAYER` (no public signup, no admin creation
+  via API) + a ₹0 wallet + `PLAYER_CREATED`, all atomic. Disable (`ACTIVE → DISABLED`) revokes
+  every session in the same transaction and blocks future login; enable (`DISABLED → ACTIVE`)
+  does not recreate sessions. Admin password reset hashes the new value, revokes every session,
+  never returns the hash, and is not a player self-service flow. All are idempotent and only ever
+  act on a PLAYER — an ADMIN target is an indistinguishable `PLAYER_NOT_FOUND`.
+- **Hard purge** runs through the single `playerDeletionService.purgePlayer()` boundary in one
+  transaction: `betRevisions`, `bets`, `withdrawals`, `walletTransactions`, `wallets`,
+  `sessions`, `otpRequests`, every `auditLogs` row whose `subjectUserId` / `entityId` is the
+  player, then the `user`. The surviving `PLAYER_DELETION_COMPLETED` row carries only
+  `actorAdminId` + `action` + timestamp. ADMIN accounts are never purgeable here. The freed
+  `loginId` may later back an entirely new, unrelated account.
+- **No admin bet / ledger editing.** Admin may read bets, revisions and the ledger; there is no
+  route or service to edit a `Bet`, delete a `Bet` / `BetRevision`, or mutate a
+  `walletTransactions` row. Player deletion remains the only path that removes financial history,
+  and only as part of removing the whole player.
 
 ## USER-FACING BET REFERENCE
 

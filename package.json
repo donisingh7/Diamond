@@ -14,6 +14,8 @@
     "db:seed": "node --conditions=react-server --import tsx scripts/seed.ts",
     "db:create-admin": "node --conditions=react-server --import tsx scripts/create-admin.ts",
     "db:check": "node --conditions=react-server --import tsx scripts/check-foundation-db.ts",
+    "db:provision": "node --conditions=react-server --import tsx scripts/provision-db.ts",
+    "db:seed-demo": "node --conditions=react-server --import tsx scripts/seed-demo.ts",
     "db:reset": "node --conditions=react-server --import tsx scripts/reset-dev-db.ts",
     "test:integration": "vitest run --config vitest.integration.config.mts"
   },

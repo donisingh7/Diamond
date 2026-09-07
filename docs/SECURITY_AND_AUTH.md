@@ -256,3 +256,68 @@ Player-only; `src/modules/auth/services/otp.service.ts`. `requestPlayerOtp(phone
 ### Verified end-to-end
 
 Beyond the automated suite, a disposable local MongoDB replica set was used to run the dev server and exercise real HTTP flows with `curl` and a cookie jar: public login pages, unauthenticated redirects, wrong/disabled/cross-portal login rejections, a full password login → `/api/auth/me` → logout → re-check cycle for both player and admin, the full OTP request → verify → session → replay-rejected cycle (using the real `devCode`), cross-role redirects in both directions, and a rejected cross-origin login attempt. The user's own configured `.env`/database was never touched or seeded.
+
+## Window 6A1 — admin player management & manual wallet movement
+
+The first `/api/admin/*` surface. Ten route files under `src/app/api/admin/players/`, all
+`apiRoute` + `export const dynamic = "force-dynamic"` + `requireAdmin()` (anonymous → `401`,
+PLAYER → `403`); every mutation (`POST` / `DELETE`) additionally runs `isTrustedOrigin` and is
+`403` on a mismatched `Origin`. No admin id or role is read from the request body/query — the
+acting admin is always the authenticated session.
+
+- **ADMIN-target protection.** `resolvePlayer()` gates every player-targeting service call:
+  `User.findOne({ _id, role: "PLAYER" })`, and a missing id, a malformed id and an ADMIN id are
+  all an indistinguishable `404 PLAYER_NOT_FOUND`. Admin accounts cannot be listed, read,
+  disabled, credited, debited or purged through player management. Hard purge additionally
+  CAS-deletes on `{ role: "PLAYER" }`.
+- **Session invalidation on state change.** `status → DISABLED`, admin password reset and hard
+  purge each `revokeAllUserSessions(userId, session)` **inside the same transaction** as the
+  change. `findActiveSessionUser` is still the real guarantee — it rechecks user existence and
+  `status === "ACTIVE"` on every protected request and deletes a stale cookie on sight — so a
+  disabled or deleted user is locked out immediately regardless of TTL. Enable does not recreate
+  sessions; the player must log in again.
+- **No secrets in audit / responses.** `writeAuditLog` (`src/modules/audit/services/audit-log.service.ts`)
+  is the single `auditLogs` writer and deep-redacts any `password` / `passwordHash` /
+  `newPassword` / `token` / `codeHash` / `secret`-style key at any depth. The password-reset
+  route returns `{ reset: true }` only; the hash is never serialized. The admin ledger DTO
+  exposes `reason` / `paymentReference` / `actorAdminId` but never the internal `idempotencyKey`.
+- **Financial safety.** Manual `ADMIN_CREDIT` / `ADMIN_DEBIT` run wallet movement + immutable
+  ledger row + redacted audit row in one MongoDB transaction; the resulting balance is computed
+  by the wallet core, never accepted from the client; `ADMIN_DEBIT` can never push available
+  below zero and never touches reserved. Idempotency key
+  `ADMIN_WALLET_ADJUSTMENT:<adminId>:<clientRequestId>` is backed by the unique
+  `walletTransactions {idempotencyKey}` index (not an in-memory check); a conflicting reuse is
+  `409 DUPLICATE_REQUEST`.
+- **Hard purge** removes every identifying record (user, sessions, OTP, wallet, ledger, bets,
+  revisions, withdrawals, and every `auditLogs` row linking to the player) in one transaction,
+  leaving only a `PLAYER_DELETION_COMPLETED` row that carries no player identifier. No tombstone,
+  no deny-list.
+
+**Demo credentials & secret handling.** `scripts/seed-demo.ts` takes its passwords from the
+environment (`getDemoSeedEnv`, guarded by `DEMO_SEED_ENABLED=true`), never from source or docs;
+`.env.example` carries blank placeholders. The script prints no password or hash. Passwords are
+stored only as `scrypt-v1$…` hashes. These intentionally simple demo values are not production
+password policy — no strength floor is imposed on the admin create-player / reset routes beyond
+the `hashPassword` bounds (non-empty, ≤ 1024 chars).
+
+### Verified end-to-end (Window 6A1)
+
+A disposable `mongodb-memory-server` replica set + a real `next dev` (`fetch` + cookie jar; the
+configured `.env` / database was never used for data) - 32 assertions, all PASS: anonymous
+`GET` / `POST /api/admin/players` → `401`; player + admin logins; a PLAYER session → `403` on
+every admin route; an ADMIN session → `200`; create player → `201` + a ₹0 wallet; a mismatched
+`Origin` on `POST /api/admin/players` → `403`; `ADMIN_CREDIT` → `200` with the server-computed
+balance; an exact `clientRequestId` replay → `200` `idempotentReplay`; a conflicting reuse →
+`409 DUPLICATE_REQUEST`; `ADMIN_DEBIT` → `200`; a debit beyond balance → `422
+INSUFFICIENT_BALANCE`; a sub-₹1 credit → `422 INVALID_AMOUNT`; `wallet/transactions` carrying
+`reason` / `paymentReference` / `actorAdminId` and **no** `idempotencyKey`;
+`status → DISABLED` → the player's live session `401`s on `/api/auth/me` and a fresh login →
+`403`; `status → ACTIVE`; reset-password → `200` with no hash in the body and login with the new
+password → `200`; `GET /api/admin/players/<adminId>` → `404 PLAYER_NOT_FOUND`; `DELETE` → `200`,
+then detail → `404`, then the deleted credential → `401`, then the freed `loginId` recreatable
+as a brand-new player. Provisioning + demo-seed CLIs were also run against a disposable replica
+set (12 collections, indexes, foundation config; `test1` + three admins hashed; ₹10,000 opening
+`ADMIN_CREDIT`; rerun adds nothing) and then, non-destructively, against the configured
+deployment database - login for `test1` (PLAYER) and `doni` / `pankaj` / `gopal` (ADMIN) plus
+cross-role rejection verified there through the auth service. All temporary drivers were deleted
+before commit; no URI, credential, cookie or hash was printed.

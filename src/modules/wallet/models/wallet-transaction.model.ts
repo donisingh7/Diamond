@@ -22,6 +22,12 @@ export const walletTransactionSchema = new Schema({
   referenceId: Schema.Types.ObjectId,
   idempotencyKey: requiredText,
   createdByAdminId: optionalUserRef,
+  /** Set only for ADMIN_CREDIT / ADMIN_DEBIT — the operator-supplied justification and optional
+   *  external payment reference for a manual money movement (Window 6A1). Never projected into a
+   *  player-facing DTO. `strict:"throw"` means these must be declared here for the admin wallet
+   *  service to persist them alongside the immutable ledger row. */
+  adminReason: { type: String, trim: true, maxlength: 500 },
+  adminPaymentReference: { type: String, trim: true, maxlength: 200 },
 }, createdOnlyOptions);
 walletTransactionSchema.pre("validate", function () {
   if (safeAdd(this.availableBeforePaise, this.availableDeltaPaise) !== this.availableAfterPaise

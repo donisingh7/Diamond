@@ -39,6 +39,8 @@ not require database access. Auth is not yet exposed even after the admin is see
 | `npm run db:test` | Original MongoDB driver ping diagnostic using `.env` |
 | `npm run db:seed` | Add missing foundation data and admin, preserve existing values |
 | `npm run db:create-admin` | Independently ensure an environment-defined initial admin |
+| `npm run db:provision` | Non-destructive: ensure all 12 canonical collections exist (visible in Atlas/Explorer even when empty), ensure indexes, ensure foundation markets/settings. Never drops a collection or index, never touches user data. Safe to rerun. |
+| `npm run db:seed-demo` | Guarded demo deployment seed — **requires `DEMO_SEED_ENABLED=true`** plus the demo passwords in the environment; never runs on app startup. Creates `test1` (PLAYER) + three ADMIN accounts, hashed; the demo player's ₹10,000 opening balance is a keyed `ADMIN_CREDIT` movement, not a direct write. Deterministic, idempotent, non-destructive; aborts with no writes if a login id already exists with a different role. |
 | `npm run db:reset -- --confirm diamond_dev` | Clear known development collections; see safeguards below |
 
 Reset additionally requires explicit `NODE_ENV=development` and a connected database
@@ -47,9 +49,12 @@ Stop application writers first. Never use reset as a normal seed/check step. It 
 indexes and unrelated collections but deletes all data in known app collections.
 
 No real payment/SMS integrations, public signup, Redux, microservices or production
-infrastructure are included. React Hook Form and shadcn primitives are deferred until
-Window 2 forms/components need them. See [security obligations](docs/SECURITY_AND_AUTH.md)
-before exposing any authenticated route.
+infrastructure are included. Money-in in V1 is **manual**: a player pays the admin outside
+Diamond, the admin verifies it, then credits the wallet via the admin API, recording an
+immutable `ADMIN_CREDIT` — there is no payment gateway (see
+[ADMIN_SPEC.md](docs/ADMIN_SPEC.md) and [DOMAIN_RULES.md](docs/DOMAIN_RULES.md)). React Hook
+Form and shadcn primitives are deferred until Window 2 forms/components need them. See
+[security obligations](docs/SECURITY_AND_AUTH.md) before exposing any authenticated route.
 
 ## DNS troubleshooting on this workstation
 

@@ -165,6 +165,11 @@ export type WalletMovementInput = {
   referenceType?: string;
   referenceId?: Types.ObjectId;
   actorAdminId?: Types.ObjectId;
+  /** Persisted verbatim on the ledger row; meaningful only for ADMIN_CREDIT / ADMIN_DEBIT
+   *  (Window 6A1 manual money movement). `assertSameOperation` also compares these so a
+   *  replayed idempotency key with a materially different reason/reference is `DUPLICATE_REQUEST`. */
+  adminReason?: string;
+  adminPaymentReference?: string;
 };
 
 export type WalletMovementResult = {
@@ -179,10 +184,13 @@ export type WalletMovementResult = {
 };
 
 function assertSameOperation(existing: WalletTransactionDoc, input: WalletMovementInput): void {
+  const sameText = (a: string | null | undefined, b: string | null | undefined) => (a ?? "") === (b ?? "");
   if (
     existing.type !== input.type
     || existing.amountPaise !== input.amountPaise
     || !existing.userId.equals(input.userId)
+    || !sameText(existing.adminReason, input.adminReason)
+    || !sameText(existing.adminPaymentReference, input.adminPaymentReference)
   ) {
     throw new DomainError(
       "DUPLICATE_REQUEST",
@@ -264,6 +272,8 @@ export async function applyWalletMovement(
         referenceType: input.referenceType,
         referenceId: input.referenceId,
         createdByAdminId: input.actorAdminId,
+        adminReason: input.adminReason,
+        adminPaymentReference: input.adminPaymentReference,
       },
     ],
     { session },
@@ -287,6 +297,8 @@ type NamedMovementInput<T extends WalletTransactionType> = {
   referenceType?: string;
   referenceId?: Types.ObjectId;
   actorAdminId?: Types.ObjectId;
+  adminReason?: string;
+  adminPaymentReference?: string;
 };
 
 type ReservedMovementInput = {

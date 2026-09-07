@@ -346,13 +346,15 @@ userId + editedAt
 ```text
 _id
 userId
+clientRequestId          # client UUID; idempotency key
 amountPaise
 
 method:
   BANK
   UPI
 
-paymentDetails
+paymentDetails           # select:false — sensitive; written once, never read on player paths
+destinationSummary       # pre-masked, non-sensitive ("HDFC Bank ••••1234" / "ra••@okhdfc") — the only destination string serialised
 
 status:
   PENDING
@@ -363,7 +365,7 @@ status:
 rejectionReason?
 
 requestedAt
-decidedAt?
+decidedAt?               # generic decision timestamp; DTO maps it onto cancelledAt / approvedAt / rejectedAt
 decidedByAdminId?
 
 timestamps
@@ -372,8 +374,9 @@ timestamps
 Indexes:
 
 ```text
-userId + createdAt
+userId + createdAt (desc)
 status + requestedAt
+userId + clientRequestId  (unique)   # request idempotency backstop
 ```
 
 ---
@@ -482,13 +485,13 @@ There are exactly twelve primary collections. Every model is under its owning mo
 | sessions | Only token hash stored; expiresAt TTL zero seconds; explicit expiry checks remain mandatory because TTL cleanup is asynchronous. |
 | otpRequests | Hashed code, LOGIN purpose, attempt count, expiresAt TTL and consumedAt; no persisted plaintext delivery code. |
 | wallets | One unique userId; available and reserved start at zero; INR only; safe nonnegative integers. Only the future wallet service may update balances. |
-| walletTransactions | Safe signed deltas, before/after reconciliation and type-specific movement validation. All ten required types; globally unique deterministic idempotencyKey. No independent delete/update UI. |
+| walletTransactions | Safe signed deltas, before/after reconciliation and type-specific movement validation. All ten required types; globally unique deterministic idempotencyKey. No independent delete/update UI. Window 6A1 added two optional additive strings — `adminReason` (≤ 500) and `adminPaymentReference` (≤ 200) — persisted only on `ADMIN_CREDIT` / `ADMIN_DEBIT` rows so a future admin screen can answer who / what / why / when for a manual money movement. Never projected into a player DTO. No index change. |
 | markets | Schedule minute integers plus day offset; slug/code unique; valid close-after-open schedule. No mutable OPEN/CLOSED flag. |
 | marketRounds | Unique marketId/businessDate, actual Date instants, result declaration metadata and settlement summary. Result string rejects number coercion. |
 | bets | Unique publicRef; unique userId/clientRequestId; unique nonempty normalized selections, metadata shape matching method, validated count/total, immutable payout snapshot and publicRef. Domain version is distinct from Mongoose __v. |
 | betRevisions | Full composition snapshots; successive from/to versions; wallet delta is before total minus after total. Unique betId/toVersion and added unique userId/editRequestId. |
-| withdrawals | Added clientRequestId and unique userId/clientRequestId for retries. BANK uses accountHolderName/accountNumber/ifsc with optional bankName; UPI uses upiId. Sensitive paymentDetails excluded from ordinary queries. Preserve account numbers as strings. |
-| auditLogs | before/after maps are flexible storage only; future service must allowlist values, remove secrets and tag subjectUserId on every player-associated record for complete purge. |
+| withdrawals | Added clientRequestId and unique userId/clientRequestId for retries. BANK uses accountHolderName/accountNumber/ifsc with optional bankName; UPI uses upiId. Sensitive paymentDetails excluded from ordinary queries. Preserve account numbers as strings. Window 5A added `destinationSummary` (safe pre-masked destination label; keeps `paymentDetails` out of every read/DTO path), bounded lengths on the paymentDetails strings, and `immutable` on the request-time fields; no index change. The duplicated `confirmAccountNumber` a BANK request carries is equality-checked and never persisted (`strict:"throw"` sub-schema is the backstop). At-rest encryption of `paymentDetails` is future production hardening, not part of the prototype. |
+| auditLogs | before/after maps are flexible storage only. Window 6A1 added the single writer `writeAuditLog(...)` (`src/modules/audit/services/audit-log.service.ts`): it deep-redacts any `password` / `passwordHash` / `newPassword` / `token` / `codeHash` / `secret`-style key at any depth and tags `subjectUserId` on every player-associated row so `purgePlayer` can delete it. The generic `PLAYER_DELETION_COMPLETED` row is written with only `actorAdminId` + `action` + timestamp — no `entityId`, no `subjectUserId`, no snapshot. |
 | platformSettings | Unique `key = platform` plus single allowed key provides singleton strategy. Initial rate 90 is in seed data, never settlement code. |
 
 Bet entryMetadata is a strict subdocument: JODI `{numbers}`, CROSSING `{digits}`, COPY_PASTE `{rawInput, palti}`. Raw input is retained to reconstruct edits; normalized selections are settlement authority. Windows 4/7 must also verify metadata-to-selection equivalence and payout outcome invariants in services. No full parser is claimed in Window 1.
@@ -586,3 +589,101 @@ outside a ledgered movement — Mock Deposit and every future funding path go th
   (`HydratedDocument`). `platform-settings.service.ts`'s `getPlatformSettings` gained an
   optional `session?: ClientSession` parameter (backward-compatible) so the payout-multiplier
   snapshot can be read inside the placement transaction.
+
+### Window 4A4 - bet editing & reads: no schema or index change, two new error codes
+
+**No collection, field, validator, hook or index was added or changed.** `bets`,
+`betRevisions` and `walletTransactions` are used exactly as Window 1 defined them:
+
+- **`betRevisions {betId, toVersion}` unique** is the verified concurrency backstop for
+  editing. Two edits racing from the same `version` both target `toVersion = version + 1`; one
+  commits, the other's insert throws E11000 inside its aborted transaction and is surfaced as
+  `STALE_VERSION`. Exercised by `bet-edit.integration.ts`.
+- **`betRevisions {userId, editRequestId}` unique** is the `editRequestId` idempotency
+  backstop. A concurrent duplicate collides here; the replay is recovered outside the aborted
+  transaction (same target wager -> the already-applied bet, no second wallet movement;
+  different target wager -> `DUPLICATE_REQUEST`).
+- **`betRevisions {userId, editedAt}`** backs a future per-player revision history read; not
+  yet routed.
+- **`betRevisions.walletDeltaPaise`** is `before.totalStakePaise - after.totalStakePaise`
+  (schema `pre("validate")` enforced): negative when the edit debited the wallet, positive
+  when it refunded, zero for a same-total edit. Ledger edit deltas may be smaller than the
+  100-paise selection minimum (an existing DATABASE.md note).
+- **`bets {userId, clientRequestId}` / `bets.publicRef` / `bets.payoutMultiplierSnapshot`
+  (immutable)** are untouched by an edit - the same identity is preserved and only `version`,
+  `selections`, `entryMethod`, `entryMetadata`, `totalSelections`, `totalStakePaise` and
+  `lastEditedAt` change, via a native-driver compare-and-set `updateOne({ _id, userId,
+  version: expectedVersion, status: "ACTIVE" })` inside the transaction (the `(version,
+  status)` filter is the atomic optimistic lock). `bets {userId, createdAt}` serves the
+  newest-first `GET /api/bets` page directly; the opaque cursor carries `(createdAt, _id)`.
+- **`walletTransactions {idempotencyKey}` unique** - the `BET_EDIT_DEBIT` / `BET_EDIT_REFUND`
+  row carries the deterministic key `BET_EDIT_DEBIT:<betId>:v<toVersion>` /
+  `BET_EDIT_REFUND:<betId>:v<toVersion>`, so a replay never double-moves and the row is
+  reconstructable. `referenceType: "BET"` / `referenceId: <betId>` link it to the bet.
+- The `Bet` update and the `BetRevision` insert use the **native driver** inside the
+  transaction (`Bet.collection.updateOne` / `BetRevision.collection.insertOne`) for the same
+  reason Window 4A3 used a plain insert - a Mongoose document created in a
+  `connection.transaction()` session is reset on retry and resetting the `strict:"throw"`
+  `entryMetadata` sub-document throws `StrictModeError`. The ODM `validate()` still runs first
+  (on throwaway `new Bet(...)` / `new BetRevision(...)`) and the unique indexes still enforce
+  correctness.
+
+Type-only additions: `bet.model.ts` gained `BetRow` (lean-read shape = record + `_id` +
+`createdAt` + `updatedAt`); `bet-revision.model.ts` gained `BetRevisionRecord`
+(`InferSchemaType`), `BetRevisionDoc` (`HydratedDocument`) and `BetRevisionRow`. No field,
+validator, hook or index changed.
+
+`lib/errors/domain-error.ts` gained `BET_NOT_FOUND` (404 - a missing OR non-owned bet,
+deliberately indistinguishable) and `STALE_VERSION` (409 - the `expectedVersion`
+optimistic-concurrency conflict, matching API_CONTRACTS.md's "409 state/version/idempotency
+conflict"). `BET_ALREADY_SETTLED` (409), `EDIT_WINDOW_CLOSED` (422), `DUPLICATE_REQUEST` (409)
+and `INSUFFICIENT_BALANCE` (422) already existed and are reused verbatim; no synonymous codes
+were added.
+
+### Window 6A1 - admin players, manual wallet movement, DB provisioning
+
+**One additive schema change, no index change, no new collection.**
+
+- `walletTransactions`: `+ adminReason` (`String`, `trim`, `maxlength 500`) and
+  `+ adminPaymentReference` (`String`, `trim`, `maxlength 200`), both optional. The wallet core
+  (`applyWalletMovement`) writes them onto the immutable ledger row for `ADMIN_CREDIT` /
+  `ADMIN_DEBIT` only, and `assertSameOperation` now also compares them so an idempotency-key
+  replay with a materially different reason / reference is `DUPLICATE_REQUEST`. The player ledger
+  DTO (`toWalletTransactionDTO`) is an allow-list and never exposes them; the admin ledger DTO
+  (`toAdminWalletTransactionDTO`) exposes `reason` / `paymentReference` / `actorAdminId` but
+  still never the `idempotencyKey`. `strict:"throw"` means the fields must be declared on the
+  schema for the admin service to persist them — hence the change.
+- No change to `users`, `wallets`, `sessions`, `otpRequests`, `bets`, `betRevisions`,
+  `withdrawals`, `markets`, `marketRounds`, `platformSettings`. Admin player management uses the
+  existing `users` shape (`role`, `status`, `loginId` unique, `phone`/`email` sparse-unique,
+  `passwordHash` `select:false`, `createdBy`, `passwordChangedAt`).
+
+**Indexes relied on (all pre-existing):** `users {loginId}` unique (create-player uniqueness +
+E11000 backstop), `users {phone}` / `{email}` sparse-unique (`IDENTIFIER_TAKEN`),
+`walletTransactions {idempotencyKey}` unique (admin credit/debit idempotency backstop, key
+`ADMIN_WALLET_ADJUSTMENT:<adminId>:<clientRequestId>` — operation-agnostic so a credit-vs-debit
+reuse collides), `walletTransactions {userId, createdAt}` (admin ledger read),
+`sessions {userId}` (session revocation on disable / reset / purge),
+`auditLogs {subjectUserId}` and `{actorAdminId, createdAt}` (purge lookup + audit reads).
+
+**New commands.**
+
+- `db:provision` (`scripts/provision-db.ts`) - NON-DESTRUCTIVE, idempotent, safe to rerun.
+  `createCollection` for any of the 12 canonical collections that do not yet exist (swallows
+  `NamespaceExists` / code 48; never drops one), then `ensureIndexes()` (`createIndexes()` per
+  model - additive, never `syncIndexes`), then `seedFoundation()` (`$setOnInsert` upserts, so a
+  customized market / settings value is preserved). Prints collection names, per-collection index
+  counts, `platformSettings` singleton presence and market count - never the URI or a credential.
+  The explicit purpose: after it runs, all 12 collections are visible in Atlas / Compass /
+  Explorer even when empty. It does NOT delete users / wallets / bets / withdrawals or reset
+  anything, and cross-checks the model registry against the frozen 12-name list.
+- `db:seed-demo` (`scripts/seed-demo.ts`) - guarded demo deployment seed. Requires
+  `DEMO_SEED_ENABLED=true` (`getDemoSeedEnv`, `src/lib/config/env.ts`) plus the demo passwords in
+  the environment; never runs on app startup. Ensures `test1` (PLAYER) + `doni` / `pankaj` /
+  `gopal` (ADMIN), passwords stored hashed via `hashPassword`. A pre-flight scan aborts with NO
+  writes if any of those login ids already exists with a different role (never repurpose a real
+  account). The demo player's ₹10,000 (`1_000_000` paise) opening balance is a genuine keyed
+  `ADMIN_CREDIT` movement through `applyWalletMovement` — key
+  `ADMIN_CREDIT:DEMO_OPENING_BALANCE:test1:v1`, reason `Demo environment opening balance` — never
+  a direct balance write, so a rerun never adds a second ₹10,000. No password or hash is printed.
+  Deterministic, idempotent, non-destructive; it is not a reset script.

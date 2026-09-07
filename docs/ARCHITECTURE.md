@@ -232,7 +232,7 @@ This repository was an existing minimal Next.js 16 App Router starter, not a new
 | `modules/markets` | Permanent market and daily round models. `lib/dates/market-time.ts` is the sole round-time calculation implementation. |
 | `modules/betting` | Canonical bet and revision models, input discriminated union, engine contracts. Engines and mutation services remain Window 4. |
 | `modules/wallet` | Wallet and delta-ledger models, future sole-writer `WalletService.applyMovement` contract. |
-| `modules/withdrawals` | Withdrawal persistence; reservation/decision/cancellation services remain Window 5/6. |
+| `modules/withdrawals` | Withdrawal persistence + the **player** lifecycle (request / own list / detail / cancel) and the transaction-scoped **admin approve / reject primitives** (Window 6A routes those). See "Window 5A". |
 | `modules/settlement` | Batch service contract; implementation in Window 7. No simulated settlement. |
 | `modules/audit` | Canonical audit model; future service must allowlist/redact snapshots and tag player associations. |
 | `modules/settings` | Singleton model, seed defaults and non-overwriting seed service. |
@@ -653,3 +653,426 @@ PLAYER; ADMIN -> `403 FORBIDDEN`, anonymous -> `401 UNAUTHENTICATED`, disabled/s
 rejected by `findActiveSessionUser`) -> `placeBetRequestSchema.parse` (Zod failure ->
 `400 INVALID_INPUT`) -> `placeBet` -> `{ data: BetPlacementReceipt }`. No `userId` from the
 client — the bet owner is the authenticated session.
+
+## Window 4A4: bet editing, revisions, player bet reads
+
+Backend / financial domain only. Whole-wager editing of an ACTIVE bet before its round's edit
+cutoff, one immutable `betRevisions` row per edit, a wallet movement for the STAKE DIFFERENCE
+only, and the owner-only player bet **read** backend (`GET /api/bets`, `GET /api/bets/:id`).
+**No My Bets / ticket / edit UI, no PNG/PDF, no withdrawal workflow, no admin CRUD, no result
+declaration, no settlement, no payout credit, no visual redesign.** Window 2A's visual design
+remains pending a dedicated Codex visual-browser refinement pass; this window built no UI. The
+roadmap lists "My Bets" under Window 5 — only its read backend is built here (no UI); the
+Window 5 UI and the edit screen both consume it, and Window 4A3's handoff already earmarked
+`GET /api/bets` / `GET /api/bets/:id` as immediately next.
+
+### Module layout
+
+```text
+lib/errors/domain-error.ts                 # + BET_NOT_FOUND (404), STALE_VERSION (409)
+modules/betting/
+  models/
+    bet.model.ts                           # + BetRow lean-read type (no schema/index change)
+    bet-revision.model.ts                  # + BetRevisionRecord / BetRevisionDoc / BetRevisionRow types (no schema/index change)
+  validators/
+    bet-query.ts                           # betsListQuerySchema (.strict): limit 1-50 default 20, cursor, status?, market?
+    edit-bet-input.ts                      # editBetRequestSchema (Zod discriminated union on entryMethod, each branch .strict()),
+                                           #   toEditEntryInput - same method-input field names as quote/placement,
+                                           #   + expectedVersion + editRequestId, NO marketSlug
+  services/
+    bet-read.service.ts                    # listPlayerBets, getPlayerBetDetail, resolveOwnedBet, ownedBetFilter,
+                                           #   toPlayerBetDTO / toBetRevisionDTO / entryMetadataOf, bet cursor codec (server-only)
+    bet-edit.service.ts                    # editBet(input, options?) -> PlayerBetDetailDTO; betEditWalletKey;
+                                           #   compositionMatchesNormalized (server-only)
+src/app/api/bets/route.ts                  # + GET (ACTIVE PLAYER) alongside the existing POST
+src/app/api/bets/[id]/route.ts             # GET + PATCH (ACTIVE PLAYER; PATCH same-origin; force-dynamic)
+```
+
+`lib/dates/market-time.ts`, `modules/markets/*`, `modules/settings/*` and
+`modules/wallet/services/wallet.service.ts` are consumed unchanged - the edit reuses
+`normalizeBetEntry`, `getBettingWindow`, `roundStateOf`, `getPlatformSettings` and the
+`debitAvailableInSession` / `creditAvailableInSession` primitives verbatim. The wallet still
+never imports betting (`Bet -> Wallet`, `referenceType: "BET"` / `referenceId` the generic link).
+
+### Layering
+
+```text
+API (thin route)  ->  Zod (editBetRequestSchema / betsListQuerySchema)  ->  BetEditService.editBet / BetReadService.*
+      |
+shared normalization engine (normalizeBetEntry) . market/round models (Window 3A) .
+platform settings (minimum stake only) . wallet transaction primitives (BET_EDIT_DEBIT / BET_EDIT_REFUND)
+      |
+one Mongo transaction (withTransaction): wallet delta + ledger + CAS Bet update + betRevisions insert
+```
+
+### `editBet(input, options?)`
+
+`input = { userId, betRef, request }` where `betRef` is the bet's `id` handle (24-hex) or its
+`publicRef`. `options` is a test seam only - `{ clock?, afterWalletMovement? }`, production
+passes neither.
+
+1. **Read settings, normalize.** `getPlatformSettings()` for `minimumStakePaise` **only** - the
+   payout multiplier is never read here (rule 4). `normalizeBetEntry(toEditEntryInput(request),
+   request.stakePaise, minimumStakePaise)` - the shared pure engine, fail-fast
+   (`INVALID_SELECTION` / `STAKE_BELOW_MINIMUM` / `MONEY_OUT_OF_RANGE`) with no database round-trip.
+2. **Resolve the caller's own bet** - `resolveOwnedBet(userId, betRef)`; missing or non-owned is
+   `BET_NOT_FOUND` (404).
+3. **Idempotent-replay recovery FIRST** - `BetRevision.findOne({ userId, editRequestId })`. If a
+   revision exists for this id, its `after` snapshot equals the newly-normalized wager and its
+   `betId` matches, return `getPlayerBetDetail(...)` **without** re-checking the cutoff and
+   **without** a wallet movement - a replay after cutoff still returns the previous success. A
+   different target wager (or a different bet) is `DUPLICATE_REQUEST`.
+4. **Guards** - `status === "ACTIVE"` (`BET_ALREADY_SETTLED`), `version === expectedVersion`
+   (`STALE_VERSION`), then `getBettingWindow(market.enabled, roundStateOf(round), clock())
+   .canEditBet` for the bet's **own** round (a closed round is not editable) - a blocked reason
+   maps to its verbatim code (`EDIT_WINDOW_CLOSED` / `MARKET_CLOSED` / `MARKET_DISABLED` / ...).
+5. **Validate the post-edit composition** - build a throwaway `new Bet({...})` and a
+   `new BetRevision({...})` and `.validate()` both, so the schema `pre("validate")` invariants
+   (count = selections length, total = sum of stakes, metadata <-> method, `toVersion =
+   fromVersion + 1`, `walletDeltaPaise = before.total - after.total`) run before the native
+   writes that bypass hooks.
+6. **One `withTransaction`:**
+   - fresh `now = clock()`; re-read the bet + market + round **in the session**; re-check
+     `status` / `version === expectedVersion` / `getBettingWindow(...).canEditBet` against
+     `now` - the authoritative cutoff check at the transactional boundary (rule 10);
+   - `stakeDelta = after.totalStakePaise - before.totalStakePaise`. `> 0` ->
+     `debitAvailableInSession({ type: "BET_EDIT_DEBIT", amountPaise: stakeDelta, idempotencyKey:
+     BET_EDIT_DEBIT:<betId>:v<toVersion> })`; `< 0` -> `creditAvailableInSession({ type:
+     "BET_EDIT_REFUND", amountPaise: -stakeDelta, idempotencyKey: BET_EDIT_REFUND:<betId>:v<toVersion> })`;
+     `= 0` -> no movement. The difference only - never a full refund + re-debit (rule 6);
+   - `options.afterWalletMovement?.()` (test seam to force a post-movement rollback);
+   - **CAS** `Bet.collection.updateOne({ _id, userId, version: expectedVersion, status:
+     "ACTIVE" }, { $set: { ...composition..., version: toVersion, lastEditedAt: now, updatedAt: now } })`
+     - the `(version, status)` filter is the atomic optimistic lock; `matchedCount !== 1` =>
+     `STALE_VERSION`. Native driver, matching the placement service's reason (a Mongoose doc
+     created in a `connection.transaction()` session is reset on retry and resetting its
+     `strict:"throw"` `entryMetadata` sub-document throws);
+   - `BetRevision.collection.insertOne(revObj, { session })` - the unique `(betId, toVersion)`
+     and `(userId, editRequestId)` indexes are the real backstop.
+7. **After commit** return `getPlayerBetDetail(userId, betId, at)` - the DTO is rebuilt from
+   persisted state and includes the new `revisions[]`.
+8. **Duplicate-key recovery** outside the aborted transaction: a collision on `(userId,
+   editRequestId)` for the *same* target wager replays the winner; a `(betId, toVersion)`
+   collision from a different racing edit means that edit won -> `STALE_VERSION`; a same-id /
+   different-wager collision is `DUPLICATE_REQUEST`.
+
+### Player bet reads
+
+`listPlayerBets(userId, { limit, cursor, status?, market? }, now)` - `userId` from the session
+only. Newest first, stable `createdAt` desc then `_id` desc, opaque base64url cursor over the
+last row's `(createdAt, _id)` (identical scheme to `GET /api/wallet/transactions`), always
+bounded (`limit` clamped to `[1, 50]`, default 20). The page's markets and rounds are
+batch-loaded with two `$in` reads, never one query per bet. `getPlayerBetDetail(userId,
+idOrRef, now)` adds the full `revisions[]` (oldest first) for the ticket / edit screen.
+`ownedBetFilter` matches a 24-hex `idOrRef` as `_id` and anything else as an upper-cased
+`publicRef`, always AND-ed with `userId`.
+
+### DTOs
+
+`PlayerBetDTO` = `{ id, publicRef, market: {name, slug, code}, businessDate, entryMethod,
+entryMetadata, selections: [{number, stakePaise}], totalSelections, totalStakePaise,
+payoutMultiplierSnapshot, status, version, placedAt, lastEditedAt, editCutoffAt, closesAt,
+canEditNow, result, winningNumber, payoutPaise, settledAt }`. `PlayerBetDetailDTO` adds
+`revisions: BetRevisionDTO[]`. `BetRevisionDTO` = `{ fromVersion, toVersion, before, after,
+walletDeltaPaise, editedAt }` where `before` / `after` = `{ entryMethod, entryMetadata,
+selections, totalStakePaise }`. Never serialized: `userId`, `marketId`, `marketRoundId`,
+`clientRequestId`, `betId`, `editRequestId`, the ledger idempotency key, any Mongo `_id` on a
+sub-document. `winningNumber` / `payoutPaise` / `settledAt` are `null` (no settlement engine
+yet) - never fabricated.
+
+### Errors
+
+Added stable codes `BET_NOT_FOUND` (404) and `STALE_VERSION` (409) to
+`lib/errors/domain-error.ts`. `EDIT_WINDOW_CLOSED` (422), `MARKET_CLOSED` / `MARKET_DISABLED` /
+`MARKET_NOT_OPEN` / `ROUND_NOT_FOUND` (422/404), `BET_ALREADY_SETTLED` (409),
+`INSUFFICIENT_BALANCE` (422), `DUPLICATE_REQUEST` (409), `INVALID_SELECTION` /
+`STAKE_BELOW_MINIMUM` / `MONEY_OUT_OF_RANGE` (422), `INVALID_INPUT` (400) already existed and
+are reused verbatim - no synonymous codes.
+
+### Routes
+
+`GET /api/bets` - `requirePlayer()` -> `betsListQuerySchema.parse` -> `listPlayerBets` ->
+`{ data: { bets, nextCursor, serverNow } }`. `GET /api/bets/[id]` - `requirePlayer()` ->
+`getPlayerBetDetail` -> `{ data: { bet, serverNow } }`. `PATCH /api/bets/[id]` - `isTrustedOrigin`
+(same-origin, `403` on mismatch) -> `requirePlayer()` -> `editBetRequestSchema.parse` -> `editBet`
+-> `{ data: { bet, serverNow } }`. All `export const dynamic = "force-dynamic"`; an ADMIN
+session is `403 FORBIDDEN`, anonymous `401 UNAUTHENTICATED`; no `userId` is accepted from the
+client on any of them.
+
+## Window 5A: player withdrawal lifecycle
+
+Backend / financial domain only. The player withdrawal lifecycle — request, own list / detail,
+player cancellation while PENDING — plus the transaction-scoped **admin approve / reject
+primitives** that Window 6A will route. **No withdrawal UI, no admin withdrawal routes, no admin
+dashboard, no real payout / Razorpay / bank / UPI integration, no settlement, no visual
+redesign.** Window 2A's visual design remains pending a dedicated Codex pass; this window built
+no UI.
+
+### Module layout
+
+```text
+lib/errors/domain-error.ts                     # + WITHDRAWAL_NOT_FOUND (404); WITHDRAWAL_NOT_PENDING (409) already existed
+modules/withdrawals/
+  models/
+    withdrawal.model.ts                        # + destinationSummary (safe, required, immutable),
+                                               #   bounded paymentDetails strings, immutable request fields,
+                                               #   WithdrawalRecord / WithdrawalDoc / WithdrawalRow types.
+                                               #   Existing indexes unchanged: (userId, createdAt desc),
+                                               #   (status, requestedAt), UNIQUE (userId, clientRequestId).
+  validators/
+    withdrawal-input.ts                        # createWithdrawalSchema (Zod discriminated union on method,
+                                               #   each branch .strict()); BANK carries confirmAccountNumber
+                                               #   (equality-checked, never stored); toPaymentDetails,
+                                               #   buildDestinationSummary; withdrawalsListQuerySchema; cancelWithdrawalSchema
+  services/
+    withdrawal.service.ts                      # requestWithdrawal, listPlayerWithdrawals, getPlayerWithdrawalDetail,
+                                               #   resolveOwnedWithdrawal, cancelWithdrawal; approveWithdrawalByAdmin /
+                                               #   rejectWithdrawalByAdmin (FUTURE ADMIN - not routed); toWithdrawalDTO,
+                                               #   assertWithdrawalAmount, withdrawal cursor codec, ledger-key builders (server-only)
+src/app/api/withdrawals/route.ts               # GET (own list) + POST (create) - ACTIVE PLAYER; POST same-origin; force-dynamic
+src/app/api/withdrawals/[id]/route.ts          # GET (own detail) - ACTIVE PLAYER; force-dynamic
+src/app/api/withdrawals/[id]/cancel/route.ts   # POST (cancel own PENDING) - ACTIVE PLAYER; same-origin; force-dynamic
+```
+
+`modules/wallet/services/wallet.service.ts` is consumed unchanged - the withdrawal service
+reuses `reserveInSession` (`WITHDRAWAL_RESERVED`), `releaseReservedInSession`
+(`WITHDRAWAL_RELEASED`), `finalizeReservedInSession` (`WITHDRAWAL_APPROVED`), `createPlayerWallet`
+and `getWalletView` verbatim. The wallet never imports withdrawals (`Withdrawal -> Wallet`,
+`referenceType: "WITHDRAWAL"` / `referenceId` the generic link).
+
+### Layering
+
+```text
+API (thin route)  ->  Zod (createWithdrawalSchema / withdrawalsListQuerySchema)  ->  WithdrawalService.*
+      |
+wallet transaction primitives (reserve / release / finalize, Window 4A2)
+      |
+one Mongo transaction (withTransaction): wallet delta + ledger row + native withdrawal insert / CAS status update
+```
+
+### `requestWithdrawal(input, options?)`
+
+`input = { userId, request }` (`request` already parsed by `createWithdrawalSchema`). `options`
+is a test seam only - `{ clock?, afterWalletMovement? }`.
+
+1. **Validate the amount** - `assertWithdrawalAmount` (`INVALID_AMOUNT` below Rs 1,
+   `MONEY_OUT_OF_RANGE` beyond safe-integer precision). Derive `destinationSummary` (masked) and
+   `paymentDetails` (the duplicated `confirmAccountNumber` is dropped).
+2. **Existing-success idempotency recovery FIRST** - `Withdrawal.findOne({ userId, clientRequestId })`.
+   A hit whose `(method, amountPaise, destinationSummary)` matches returns the ORIGINAL
+   withdrawal with no second reserve / ledger row; a conflicting payload is `DUPLICATE_REQUEST`.
+3. **Ensure a Rs 0 wallet** (`createPlayerWallet` - never grants funds), pre-allocate the
+   withdrawal `_id`, build + `.validate()` a throwaway `new Withdrawal({...})` so the schema
+   `pre("validate")` invariants (method <-> paymentDetails shape) run before the native insert.
+4. **One `withTransaction`:** `reserveInSession({ amountPaise, idempotencyKey:
+   WITHDRAWAL_RESERVED:<withdrawalId>, referenceType: "WITHDRAWAL", referenceId })` - fails
+   `INSUFFICIENT_BALANCE` when `available < amount` (this IS the "maximum = available balance"
+   rule) -> native `Withdrawal.collection.insertOne` of the `PENDING` document. The reserve
+   precedes the insert so an insert failure demonstrably rolls the wallet back. A native insert
+   is used for the same reason as bet placement - a Mongoose doc created inside
+   `connection.transaction()` is reset on retry, and resetting its `strict:"throw"`
+   `paymentDetails` sub-document throws.
+5. **Lost `(userId, clientRequestId)` race** - the loser's insert collides on the unique index
+   inside its aborted transaction (reserve included); recover the winner outside it.
+
+### Terminal transitions - `cancelWithdrawal` / `approveWithdrawalByAdmin` / `rejectWithdrawalByAdmin`
+
+All three share `applyTerminalTransition`: one `withTransaction` that re-reads the withdrawal
+**in-session**, moves the wallet through a Window 4A2 primitive, then flips the status with a
+compare-and-set `Withdrawal.collection.updateOne({ _id, status: "PENDING" }, { $set: { status,
+decidedAt, ... } })`. `matchedCount !== 1` (a concurrent transition already won) throws
+`WITHDRAWAL_NOT_PENDING`, which aborts the whole transaction - the wallet movement rolls back
+with it. An in-session read already showing the target status means an identical racing
+transition committed first: return without moving money again. After a lost race the caller
+re-reads and returns success **only when the withdrawal actually reached the target state**; a
+forced-rollback failure leaves it PENDING and rethrows.
+
+| Transition | Who | Guard -> new status | Wallet move | Ledger key | Notes |
+| --- | --- | --- | --- | --- | --- |
+| cancel | player, own | `PENDING -> CANCELLED` | `releaseReservedInSession` (`available += X`, `reserved -= X`) | `WITHDRAWAL_RELEASED:<id>` | already-CANCELLED -> DTO, no re-release; APPROVED/REJECTED -> `WITHDRAWAL_NOT_PENDING` (409); not deleted |
+| reject | future admin (primitive, **not routed**) | `PENDING -> REJECTED` + reason | `releaseReservedInSession` | `WITHDRAWAL_RELEASED:<id>` | reason required (`INVALID_INPUT` if blank); already-REJECTED -> DTO |
+| approve | future admin (primitive, **not routed**) | `PENDING -> APPROVED` | `finalizeReservedInSession` (`reserved -= X` only) | `WITHDRAWAL_APPROVED:<id>` | available unchanged; no real payout; already-APPROVED -> DTO |
+
+cancel and reject share `WITHDRAWAL_RELEASED:<id>` - safe because a withdrawal has exactly one
+terminal transition (the CAS on `status: "PENDING"`), so only one can ever win, and the shared
+unique ledger key is an extra double-release guard.
+
+### DTO / masking
+
+`toWithdrawalDTO` returns `{ id, method, amountPaise, status, destination: { method, summary },
+rejectionReason, requestedAt, decidedAt, cancelledAt, approvedAt, rejectedAt, createdAt,
+updatedAt }`. `summary` is the stored pre-masked `destinationSummary`; `paymentDetails` is
+**never** read on any player path. The schema's single generic `decidedAt` is mapped onto the
+status-specific `cancelledAt` / `approvedAt` / `rejectedAt` (and still returned raw). Never
+serialised: `userId`, `paymentDetails`, `clientRequestId`, `decidedByAdminId`, the ledger
+idempotency key, sub-document `_id`.
+
+### Errors
+
+Added `WITHDRAWAL_NOT_FOUND` (404) to `lib/errors/domain-error.ts`. `WITHDRAWAL_NOT_PENDING`
+(409), `INSUFFICIENT_BALANCE` (422), `INVALID_AMOUNT` (422), `MONEY_OUT_OF_RANGE` (422),
+`DUPLICATE_REQUEST` (409), `FORBIDDEN` (403), `UNAUTHENTICATED` (401), `INVALID_INPUT` (400)
+already existed and are reused verbatim - no synonymous codes.
+
+### Routes
+
+`GET /api/withdrawals` - `requirePlayer()` -> `withdrawalsListQuerySchema.parse` ->
+`listPlayerWithdrawals` -> `{ data: { withdrawals, nextCursor, serverNow } }`.
+`GET /api/withdrawals/[id]` - `requirePlayer()` -> `getPlayerWithdrawalDetail` ->
+`{ data: { withdrawal, serverNow } }`. `POST /api/withdrawals` and
+`POST /api/withdrawals/[id]/cancel` - `isTrustedOrigin` (same-origin, `403` on mismatch) ->
+`requirePlayer()` -> Zod -> service -> `{ data: { withdrawal, wallet, serverNow } }`. All
+`export const dynamic = "force-dynamic"`; an ADMIN session is `403 FORBIDDEN`, anonymous
+`401 UNAUTHENTICATED`; no `userId` is accepted from the client. A non-owned or missing
+withdrawal is an indistinguishable `404 WITHDRAWAL_NOT_FOUND` on detail and cancel.
+
+## Window 6A1: admin player management, manual wallet movement, DB provisioning & demo seed
+
+Backend / financial domain only — **no admin UI**. Adds the first `/api/admin/*` surface, the
+first `auditLogs` writer, and two operational CLIs. See DOMAIN_RULES.md's "Window 6A1
+implementation clarification" for the frozen-rule mapping, API_CONTRACTS.md's "Window 6A1 -
+implemented admin player & wallet contract" for exact shapes, and DATABASE.md's Window 6A1
+section for the one additive schema field.
+
+### Module layout
+
+```
+src/modules/admin/
+  validators/admin-player-input.ts   strict Zod for every admin route
+  services/
+    admin-player.service.ts          create / list / detail / disable / enable /
+                                     reset-password / wallet view / linked bet & withdrawal reads
+    admin-wallet.service.ts          adminCreditWallet / adminDebitWallet / admin ledger read
+    player-deletion.service.ts       playerDeletionService.purgePlayer() (implements the
+                                     Window 6 PlayerDeletionService contract) + purgePlayerById
+src/modules/audit/services/
+  audit-log.service.ts               writeAuditLog(...) — the single auditLogs writer + redaction
+src/app/api/admin/players/           10 route files (thin handlers)
+scripts/provision-db.ts              npm run db:provision
+scripts/seed-demo.ts                 npm run db:seed-demo
+```
+
+### Layering
+
+Handlers stay thin: `requireAdmin()` → (mutations) `isTrustedOrigin` → strict Zod → service →
+sanitized `{ data }`. Services own all business logic, transactions and authorization nuance.
+The wallet is touched ONLY through the Window 4A2 core (`applyWalletMovement` and the named
+wrappers) — no admin code writes a balance directly (CODEX_RULES #10). `auditLogs` is written
+ONLY through `writeAuditLog`.
+
+### `resolvePlayer` — the admin authorization primitive
+
+Every player-targeting service call goes through `resolvePlayer(playerId, session?)`: 24-hex
+check → `User.findOne({ _id, role: "PLAYER" })`. A missing id, a malformed id and an **ADMIN**
+id are all an indistinguishable `PLAYER_NOT_FOUND` (404), so admin accounts cannot be
+enumerated or mutated through player management (brief §29). `passwordHash` is `select:false`
+and never loaded anywhere in the module.
+
+### Admin player lifecycle
+
+- **create** — one transaction: `User.create` (role server-forced PLAYER, `createdBy` = admin) →
+  `createPlayerWallet` (₹0) → `writeAuditLog(PLAYER_CREATED)`. Pre-checks give clean
+  `LOGIN_ID_TAKEN` / `IDENTIFIER_TAKEN`; the unique `users` indexes are the race backstop
+  (E11000 re-mapped to the same codes).
+- **list** — `role: "PLAYER"`, newest-first `(createdAt, _id)` cursor, `search` on normalized
+  `loginId` / `email` (case-insensitive substring) + exact `phone`. Wallet balances and
+  bet / withdrawal counts are batch-loaded (one `$in` wallet read + two `$group` aggregates) —
+  never one query per row.
+- **disable / enable** — CAS `updateOne` on `{ role:"PLAYER", status:<from> }` inside a
+  transaction; disable also `revokeAllUserSessions(userId, session)`. Audit only on a real
+  transition (idempotent repeat writes nothing). Enable never recreates sessions.
+- **reset-password** — `hashPassword` → `updateOne` `passwordHash` + `passwordChangedAt` →
+  `revokeAllUserSessions` → `writeAuditLog(PLAYER_PASSWORD_RESET)` (no password material), one
+  transaction. Never returns the hash. Not a player self-service flow.
+- **linked reads** — `listPlayerBetsForAdmin` / `listPlayerWithdrawalsForAdmin` reuse the exact
+  player-facing `listPlayerBets` / `listPlayerWithdrawals` (already-sanitized DTOs) after
+  `resolvePlayer`. Admin inspects bets / revisions only — there is no admin bet or ledger edit
+  path anywhere (brief §23).
+
+### Manual wallet movement (`admin-wallet.service.ts`)
+
+`adminCreditWallet` / `adminDebitWallet` share one `adjust(type, input, options)` core:
+
+1. `resolvePlayer` (PLAYER only), `assertAdminAdjustmentAmount` (≥ ₹1, safe integer), require a
+   non-empty `reason`.
+2. `createPlayerWallet` (₹0 ensure), build key
+   `ADMIN_WALLET_ADJUSTMENT:<adminId>:<clientRequestId>` — **operation-agnostic** so a
+   credit↔debit reuse of a request id collides in the wallet core's `assertSameOperation`.
+3. existing-success recovery FIRST (`getTransactionByIdempotencyKey`): an exact match replays
+   the original receipt; a mismatch on type / amount / player / `adminReason` /
+   `adminPaymentReference` is `DUPLICATE_REQUEST`.
+4. one `withTransaction`: `applyWalletMovement` (writes the immutable `ADMIN_CREDIT` /
+   `ADMIN_DEBIT` ledger row carrying `adminReason` + `adminPaymentReference` +
+   `createdByAdminId`) → `writeAuditLog(ADMIN_WALLET_CREDIT / ADMIN_WALLET_DEBIT)` — **skipped
+   on the in-transaction idempotent-replay path** so a write-conflict retry never double-audits
+   a single adjustment.
+5. a lost race collides on the unique `idempotencyKey` index inside the aborted transaction and
+   is recovered outside it.
+
+`ADMIN_DEBIT` uses the wallet core's `availableBalancePaise >= amount` guard, so available never
+goes negative (`INSUFFICIENT_BALANCE`) and `reservedBalancePaise` is never read or written. The
+resulting balance always comes from `applyWalletMovement`, never the request. An
+`afterWalletMovement` test seam forces a post-movement / pre-commit rollback.
+
+`listPlayerWalletTransactionsForAdmin` returns `AdminWalletTransactionDTO` — the player ledger
+fields plus `reason` / `paymentReference` / `actorAdminId`, but never the `idempotencyKey`.
+
+### Hard purge (`player-deletion.service.ts`)
+
+`playerDeletionService.purgePlayer({ actorAdminId, playerId })` — the single deletion boundary
+(ADMIN_SPEC.md). One `withTransaction`: collect the player's `bet` ids → delete `betRevisions`
+(by `userId` or `betId`), `bets`, `withdrawals`, `walletTransactions`, `wallets`, `sessions`,
+`otpRequests`, every `auditLogs` row with `subjectUserId` **or** `entityId` = the player, then
+CAS-delete the `user` on `{ role: "PLAYER" }`. Finally `writeAuditLog(PLAYER_DELETION_COMPLETED)`
+with `entityType: "Player"` and **no** `entityId` / `subjectUserId` / snapshot. ADMIN targets
+are `PLAYER_NOT_FOUND`. No tombstone, no deny-list — the freed `loginId` is immediately
+reusable for a new account.
+
+### Audit (`audit-log.service.ts`)
+
+`writeAuditLog(input, session?)` is the only `auditLogs` writer. It deep-copies `before` /
+`after` replacing any `password` / `passwordHash` / `newPassword` / `token` / `codeHash` /
+`secret`-style key (case-insensitive, any depth) with `[REDACTED]`, and requires `subjectUserId`
+on every player-associated row so `purgePlayer` can find it. Actions:
+`PLAYER_CREATED` · `PLAYER_DISABLED` · `PLAYER_ENABLED` · `PLAYER_PASSWORD_RESET` ·
+`PLAYER_DELETION_COMPLETED` · `ADMIN_WALLET_CREDIT` · `ADMIN_WALLET_DEBIT`.
+
+### Errors
+
+Added `PLAYER_NOT_FOUND` (404), `LOGIN_ID_TAKEN` (409), `IDENTIFIER_TAKEN` (409) to
+`lib/errors/domain-error.ts`. `INVALID_AMOUNT` (422), `INSUFFICIENT_BALANCE` (422),
+`MONEY_OUT_OF_RANGE` (422), `DUPLICATE_REQUEST` (409), `INVALID_INPUT` (400), `FORBIDDEN` (403),
+`UNAUTHENTICATED` (401) are reused verbatim — no synonymous codes.
+
+### Reuse of the wallet core
+
+`WalletMovementInput` / `NamedMovementInput` gained optional `adminReason` /
+`adminPaymentReference`; `applyWalletMovement` persists them on the ledger row and
+`assertSameOperation` compares them (a replayed key with a materially different reason /
+reference is `DUPLICATE_REQUEST`). `revokeAllUserSessions` gained an optional `session` param so
+disable / reset / purge revoke sessions inside their transaction. Nothing else in the wallet or
+auth core changed.
+
+### Operational CLIs
+
+- **`scripts/provision-db.ts`** (`db:provision`) — connect → `createCollection` for any missing
+  canonical collection (swallow `NamespaceExists`) → `ensureIndexes()` (additive `createIndexes`,
+  never `syncIndexes`) → `seedFoundation()` (`$setOnInsert` upserts). Non-destructive,
+  idempotent, cross-checks the model registry against the frozen 12-name list, prints names /
+  index counts only.
+- **`scripts/seed-demo.ts`** (`db:seed-demo`) — guarded by `DEMO_SEED_ENABLED=true`
+  (`getDemoSeedEnv`); passwords come from the environment, never source. Pre-flight role-conflict
+  scan aborts with no writes. Creates `test1` (PLAYER) + `doni` / `pankaj` / `gopal` (ADMIN),
+  hashed. The demo player's ₹10,000 opening balance is a keyed `ADMIN_CREDIT` through
+  `applyWalletMovement` (key `ADMIN_CREDIT:DEMO_OPENING_BALANCE:test1:v1`), never a direct write.
+  Deterministic and idempotent — a rerun preserves accounts and never re-credits.
+
+### Routes
+
+10 files under `src/app/api/admin/players/`, all `apiRoute` + `export const dynamic =
+"force-dynamic"` + `requireAdmin()`; every mutation also `isTrustedOrigin` (`403` on mismatch).
+`GET|POST /players`, `GET|DELETE /players/[id]`, `POST /players/[id]/status`,
+`POST /players/[id]/reset-password`, `GET /players/[id]/wallet`,
+`GET /players/[id]/wallet/transactions`, `POST /players/[id]/wallet/credit`,
+`POST /players/[id]/wallet/debit`, `GET /players/[id]/bets`, `GET /players/[id]/withdrawals`.
+Anonymous → `401`, PLAYER → `403`. No admin id / role is read from the request.

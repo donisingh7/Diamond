@@ -183,3 +183,45 @@ No admin screens or admin HTTP operations are exposed in Window 1. Only the envi
 Player creation must transactionally create identity plus a zero wallet; an initial credit is a separate audited wallet-service movement. Player hard deletion requires a concrete confirmation flow and centralized purge of every application-held identifier/history, coordinated with concurrent writes. A generic non-identifying completion audit may remain, with no target ID or link. This exception does not permit independent ledger/bet deletion.
 
 Market timing edits change future schedule configuration; existing persisted round instants remain snapshots. Result declaration reviews a closed round and a two-character result string, then uses an authorized service; settlement and retry state must be visible without allowing settled-result editing. Rate changes affect only future bet snapshots. All admin mutations must authorize ADMIN on the server and record a redacted audit event.
+
+## Window 6A1 — implemented (backend only, no UI)
+
+Live now under `src/app/api/admin/players/` (all `requireAdmin`, `force-dynamic`, strict Zod,
+same-origin on mutations, sanitized responses; a missing / malformed / ADMIN `[id]` is an
+indistinguishable `404 PLAYER_NOT_FOUND`):
+
+| Capability | Route | Notes |
+| --- | --- | --- |
+| Create player | `POST /api/admin/players` | role server-forced PLAYER, `+` ₹0 wallet `+` `PLAYER_CREATED`, one transaction; `LOGIN_ID_TAKEN` / `IDENTIFIER_TAKEN` |
+| List / search / filter | `GET /api/admin/players` | PLAYER only, newest-first cursor, `search` on normalized loginId / email / phone, `status` filter, wallet balances + bet/withdrawal counts (batch-loaded, no N+1) |
+| Player detail | `GET /api/admin/players/[id]` | sanitized identity + wallet available / reserved / total / currency |
+| Enable / disable | `POST /api/admin/players/[id]/status` | disable revokes all sessions in-txn + `PLAYER_DISABLED`; enable does not recreate sessions + `PLAYER_ENABLED`; idempotent |
+| Reset password | `POST /api/admin/players/[id]/reset-password` | hashes, revokes all sessions, `PLAYER_PASSWORD_RESET`; hash never returned; not a self-service flow |
+| Hard delete | `DELETE /api/admin/players/[id]` | `playerDeletionService.purgePlayer()` — full purge in one transaction, only a non-identifying `PLAYER_DELETION_COMPLETED` survives; ADMIN targets refused |
+| Wallet read | `GET /api/admin/players/[id]/wallet` | balances |
+| Ledger read | `GET /api/admin/players/[id]/wallet/transactions` | bounded, newest-first; `reason` / `paymentReference` / `actorAdminId` shown, `idempotencyKey` never |
+| Manual credit | `POST /api/admin/players/[id]/wallet/credit` | LOCKED V1 deposit: external payment → admin verifies → `ADMIN_CREDIT`; atomic wallet + ledger + audit; idempotent on `clientRequestId` |
+| Manual debit | `POST /api/admin/players/[id]/wallet/debit` | `ADMIN_DEBIT` correction; never below zero; reserved untouched; earlier ledger row never edited |
+| Bets / revisions view | `GET /api/admin/players/[id]/bets` | read-only reuse of the sanitized player bet DTO (revisions via the player bet-detail service); no admin bet edit/delete anywhere |
+| Withdrawals view | `GET /api/admin/players/[id]/withdrawals` | read-only, masked `destination.summary` only |
+
+Audit actions written: `PLAYER_CREATED`, `PLAYER_DISABLED`, `PLAYER_ENABLED`,
+`PLAYER_PASSWORD_RESET`, `PLAYER_DELETION_COMPLETED`, `ADMIN_WALLET_CREDIT`,
+`ADMIN_WALLET_DEBIT` — all through the single `writeAuditLog` writer, which redacts any
+password / hash / token / secret key and tags `subjectUserId` for purge.
+
+**Manual deposit flow (LOCKED V1, no gateway):** the player pays the admin **outside Diamond**
+(UPI / cash / bank); the admin verifies that payment; the admin credits the wallet via
+`wallet/credit`; the system records an immutable `ADMIN_CREDIT` with a required `reason` and an
+optional `paymentReference` (UTR / txn id). There is no Razorpay / UPI-collect / gateway
+integration in V1. `ADMIN_DEBIT` is the correction mirror.
+
+**Deferred to Window 6A2 / later:** admin withdrawal approve/reject routes ("Mark Paid &
+Approve" — finalizes RESERVED only), market config edits, result declaration, game-rate API, a
+full admin audit browser, settlement, and all admin UI (Codex owns the frontend).
+
+**Provisioning / demo tooling:** `npm run db:provision` (non-destructive; ensures the 12
+canonical collections + indexes + foundation markets/settings; makes every collection visible in
+Atlas/Explorer even when empty) and `npm run db:seed-demo` (guarded by `DEMO_SEED_ENABLED=true`;
+creates `test1` PLAYER + `doni` / `pankaj` / `gopal` ADMIN, hashed; the demo player's ₹10,000
+opening balance is a keyed `ADMIN_CREDIT`, never a direct balance write; idempotent).

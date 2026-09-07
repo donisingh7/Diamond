@@ -1,4 +1,4 @@
-import { Schema } from "mongoose";
+import { Schema, type InferSchemaType, type HydratedDocument, type Types } from "mongoose";
 import { modelFor, userRef, nonnegativeInteger, integer, requiredText } from "@/lib/db/schema";
 import { safeAdd } from "@/lib/money";
 import { compositionSchema } from "./composition.schema";
@@ -21,4 +21,8 @@ betRevisionSchema.pre("validate", function () {
 betRevisionSchema.index({ betId: 1, toVersion: 1 }, { unique: true });
 betRevisionSchema.index({ userId: 1, editedAt: -1 });
 betRevisionSchema.index({ userId: 1, editRequestId: 1 }, { unique: true });
+/** Type-only exports (no schema/index change). */
+export type BetRevisionRecord = InferSchemaType<typeof betRevisionSchema>;
+export type BetRevisionDoc = HydratedDocument<BetRevisionRecord>;
+export type BetRevisionRow = BetRevisionRecord & { _id: Types.ObjectId };
 export const BetRevision = modelFor("BetRevision", betRevisionSchema, "betRevisions");
