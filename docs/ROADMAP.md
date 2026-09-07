@@ -1081,3 +1081,90 @@ token / password / hash / DB URI / bank / UPI value was printed. 43 assertions, 
 No configured Atlas destructive mutation was performed; the four additive indexes were not
 applied there. No frontend file was touched. No Window 6B (admin UI) or Window 7A (settlement /
 `WIN_CREDIT`) work was started.
+
+## Window 7A1 handoff status
+
+Window 7A1 (settlement **core domain** — one declared, unsettled `MarketRound` → final bet
+outcomes + winning wallet credits) is complete. **Backend / domain only — no admin settlement
+route or UI, no settlement dashboard, no result correction, no Window 7A2 cross-round
+orchestration, no frontend.** See DOMAIN_RULES.md's "Window 7A1 implementation clarification" for
+the frozen-rule mapping.
+
+Implemented:
+
+- `src/modules/settlement/services/settlement.service.ts` —
+  - `settleRound(roundId, { batchSize? })` → `RoundSettlementSummary` (`roundId` / `marketId` /
+    `businessDate` / `result`, `alreadySettled`, `processedBets`, `creditedThisRunPaise`,
+    `totalBets` / `wonCount` / `lostCount` / `totalStakePaise` / `totalCreditedPaise`,
+    `settlementStatus: "SETTLED"`, `settledAt`). Lifecycle: `PENDING`/`FAILED` → CAS
+    `PROCESSING` → drain every `ACTIVE` bet in `batchSize` chunks → CAS `PROCESSING → SETTLED`
+    with `settledAt` + a recomputed `settlementSummary`. A round already `SETTLED` replays its
+    stored summary with no money movement.
+  - `settleRoundBatch(roundId, batchSize)` → `{ processed, wonCount, lostCount, creditedPaise,
+    complete }` — the resumable primitive; processes up to `batchSize` still-`ACTIVE` bets,
+    oldest `_id` first, **one Mongo transaction per bet**. Requires a declared result; does not
+    touch `settlementStatus`.
+  - `winCreditKey(betId)` → `WIN_CREDIT:<betId>`; `settlementService` binds
+    `settlement.contract.ts`'s `SettleBatch`.
+  - Per bet: the selection whose `number === round.result` (unique set → at most one) is paid
+    `stakePaise × bet.payoutMultiplierSnapshot` via `creditAvailableInSession({ type:
+    "WIN_CREDIT" })` (available `+= credit`, one immutable ledger row); no match → `LOST`,
+    `payoutPaise 0`, no wallet movement. Every settled bet stores `winningNumber = round.result`
+    + `settledAt`. The bet transition is `updateOne({ _id, status: "ACTIVE" }, …)` — a rerun or
+    a losing concurrent worker gets `matchedCount 0` and skips; the unique
+    `walletTransactions.idempotencyKey` is the physical backstop against a second credit.
+- `src/lib/errors/domain-error.ts` — **+ `RESULT_NOT_DECLARED` (422)**: `settleRound` /
+  `settleRoundBatch` on a round with no `result`. Nothing else changed.
+- No schema change, no new collection, no new index. `settlement.contract.ts` unchanged. Result
+  declaration (Window 6A2) is untouched and still never triggers settlement.
+
+Deliberately **not** done (out of window): any `/api/**` settlement route, admin settlement
+trigger / UI (Window 7A2 / 6B), settlement dashboards, result correction / re-settlement, a
+scheduled or event-driven settlement runner, `betRevisions` interaction, any frontend file, any
+Window 8+ work.
+
+## Verification record - 2026-09-08 (Window 7A1)
+
+| Check | Result |
+| --- | --- |
+| `npm.cmd run typecheck` | PASS; strict TypeScript incl. the new settlement service + integration file |
+| `npm.cmd run lint` | PASS; no warnings |
+| `npm.cmd run test:integration -- settlement` | PASS; 10 tests in `settlement.integration.ts` against a disposable MongoDB 8.2.6 replica set |
+| `git diff --check` | PASS; no whitespace errors |
+| Configured Atlas | **untouched** — no HTTP driver, no script, no Atlas mutation; no new index applied there |
+
+Targeted integration coverage (`settlement.integration.ts`, 10 tests, disposable replica set;
+bets placed through the real `placeBet`, result stamped directly on the round per the 6A2
+fixture convention):
+
+- **winner at 90x** — `WON`; `payoutPaise = 1000 × 90 = 90_000` (the matching selection's stake,
+  **not** the `3_000` bet total); `available 97_000 → 187_000`; exactly one `WIN_CREDIT` row
+  (`amountPaise 90_000`, `referenceType "BET"`, key `WIN_CREDIT:<betId>`); round `SETTLED` with a
+  matching `settlementSummary`.
+- **leading-zero result** — a `"00"` selection matches as a string; `winningNumber "00"`, paid.
+- **loser** — `LOST`, `payoutPaise 0`, `winningNumber` = the round result, `settledAt` set, wallet
+  byte-identical, zero `WIN_CREDIT` rows.
+- **multiple bets / users** — 2 players, 3 bets (2 win, 1 lose); summary `totalBets 3` /
+  `wonCount 2` / `lostCount 1` / `totalStakePaise 10_500` / `totalCreditedPaise 270_000`; each
+  wallet credited only for its winning bet; one `WIN_CREDIT` per winner.
+- **snapshot preservation** — `platformSettings.payoutMultiplier` set `90 → 50` after placement;
+  settlement still pays `1000 × 90` from `bet.payoutMultiplierSnapshot`.
+- **exact rerun** — 2nd `settleRound` → `alreadySettled: true`, `processedBets 0`,
+  `totalCreditedPaise` unchanged; a 3rd `settleRoundBatch` → `{ processed: 0, complete: true }`;
+  balance, `settledAt` and the single `WIN_CREDIT` row all unchanged.
+- **concurrent attempts** — `Promise.allSettled` of 3 `settleRound` calls: all fulfil, exactly
+  one transitions the bet (`Σ processedBets === 1`), one `WIN_CREDIT` row, `available` credited
+  once, bet `WON` once, round `SETTLED`.
+- **no declared result** — `settleRound` and `settleRoundBatch` both reject `RESULT_NOT_DECLARED`;
+  bet stays `ACTIVE` with null `payoutPaise`, wallet unchanged, `settlementStatus` still `PENDING`,
+  zero `WIN_CREDIT`.
+- **wallet conservation** — Σ(available after) − Σ(available before) equals both
+  `summary.totalCreditedPaise` and the `$sum` of every `WIN_CREDIT.amountPaise`; one `WIN_CREDIT`
+  per winner.
+- **partial-failure recovery** — the winner's wallet is deleted to force the credit to throw;
+  `settleRound` rejects `WALLET_NOT_FOUND`, the bet stays `ACTIVE`, no `WIN_CREDIT` is written,
+  the round is left `PROCESSING`; the wallet is recreated and a re-run finishes cleanly —
+  bet `WON`, exactly one `WIN_CREDIT`, round `SETTLED`.
+
+No HTTP driver, no full integration/HTTP suite run, no configured Atlas mutation. No frontend
+file was touched. No Window 7A2 orchestration was started.
