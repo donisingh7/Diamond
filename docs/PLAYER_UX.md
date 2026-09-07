@@ -1,5 +1,17 @@
 # Player experience
 
+## Window 4B0 — appearance preference
+
+The approved primary experience is **Light**: luminous pearl/white surfaces, dark readable typography, polished gold Play actions, emerald OPEN indicators and framed result numbers. Dark remains an optional charcoal/champagne adaptation of the same components. This supersedes historical dark-primary design notes; no frozen betting rule changes.
+
+Players choose Light or Dark directly in the header, including login. Desktop shows sun/Light and moon/Dark; compact player headers use accessible icon buttons. Both targets remain at least 44×44px. On phones balance occupies its own row, preserving room for brand, appearance and Account. Bottom navigation and safe-area clearance remain.
+
+An absent, invalid or inaccessible `diamond-theme` local preference renders Light even if the OS is Dark. Explicit selection persists across reloads/navigation/new tabs and synchronizes open tabs. Storage is UI-only, never authentication authority. A small root-head initializer applies preference before body paint; stable server markup and a hydration-safe external-store subscription keep React consistent. When storage is blocked, the switch works for the visit and reload returns to Light.
+
+Home emphasizes the existing server balance and market lineup. Market cards distinguish OPEN, closing and unavailable states through text plus restrained color. View links still lead to market detail; Play still leads to selection. Results retain leading zeros. Loading, failure/retry, empty and unavailable states use the same semantic palettes. Keyboard focus, dialog focus return and reduced motion remain supported.
+
+Window 4B builders, confirmation/success tickets and editing remain deferred. My Bets, Wallet and Admin operational pages retain their placeholder scope. See DESIGN_SYSTEM.md for token architecture and browser verification.
+
 Read [CODEX_RULES.md](CODEX_RULES.md) first. These requirements are authoritative and originate from the approved Window 1 brief. DOMAIN_RULES.md owns business rules; the roadmap limits implementation scope. Future-facing descriptions do not imply implemented features.
 
 ## TICKET UX — DOCUMENT NOW, BUILD LATER

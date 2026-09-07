@@ -43,7 +43,7 @@ function TodayResults() {
 }
 
 export function PlayerHome({ name }: { name: string }) {
-  return <div className="player-page"><div className="home-intro"><div className="home-heading"><p className="eyebrow">Your daily perspective</p><h1>Welcome back,<br /><span>{name}.</span></h1><p className="text-secondary">A clear view of your markets and the day’s results.</p><Link className="button button--primary home-action" href="/markets">Explore markets <ArrowRight aria-hidden="true" /></Link></div><WalletSummary /></div><MarketOverview home /><TodayResults /></div>;
+  return <div className="player-page"><div className="home-intro"><div className="home-heading"><p className="eyebrow">The day is in play</p><h1>Welcome back,<br /><span>{name}.</span></h1><p className="text-secondary">A clear view of your markets and the day’s results.</p><Link className="button button--primary home-action" href="/markets">Play · Explore markets <ArrowRight aria-hidden="true" /></Link></div><WalletSummary /></div><MarketOverview home /><TodayResults /></div>;
 }
 
 export function MarketsScreen() {

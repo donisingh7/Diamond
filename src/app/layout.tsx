@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
+import { THEME_INITIALIZER } from "@/lib/ui/theme";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -22,7 +23,6 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
-  themeColor: "#0b0c0e",
 };
 
 export default function RootLayout({
@@ -31,7 +31,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" data-theme="light" suppressHydrationWarning>
+      <head><script id="diamond-theme" dangerouslySetInnerHTML={{ __html: THEME_INITIALIZER }} /></head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
         <Providers>{children}</Providers>
       </body>

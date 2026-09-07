@@ -1,5 +1,13 @@
 # Implementation roadmap
 
+## Window 4B0 handoff — 2026-09-07
+
+**COMPLETE: Light-First Theme System + Gaming Visual Identity.** Frontend-only work from integrated baseline `ca18433` on `codex-frontend`. Light is the true first-visit default, Dark is header-accessible and explicitly persisted locally, and an early root initializer prevents theme flashing. Shared semantic palettes retrofit all implemented surfaces with luminous gaming materials. See DESIGN_SYSTEM.md and PLAYER_UX.md for architecture and QA evidence.
+
+Final gates passed: typecheck, lint, 232 tests across 18 files, production build and diff whitespace check. Completed 120 route/theme/viewport checks with zero overflow and clean normal-route console/hydration; persistence, pre-hydration paint, contrast and interaction checks passed. QA scratch artifacts were removed. No dependencies changed; backend/domain/API/auth/schema behavior and `claude-backend` were untouched.
+
+Window 4B betting functionality has **not** started. Next frontend work is the separately requested Window 4B1 betting-entry window. Do not start it, later Wallet/My Bets features or Admin operations automatically. Integration/push remains the human's responsibility after the parallel backend window is audited.
+
 Read [CODEX_RULES.md](CODEX_RULES.md) first. These requirements are authoritative and originate from the approved Window 1 brief. DOMAIN_RULES.md owns business rules; the roadmap limits implementation scope. Future-facing descriptions do not imply implemented features.
 
 ## ROADMAP.md

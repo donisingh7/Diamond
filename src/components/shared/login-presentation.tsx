@@ -1,5 +1,7 @@
 "use client";
 
+import { ThemeToggle } from "@/components/ui/theme-toggle";
+
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, ArrowRight, LockKeyhole, ShieldCheck, Smartphone, UserRound } from "lucide-react";
@@ -106,12 +108,12 @@ export function LoginPresentation({ admin = false }: { admin?: boolean }) {
 
   return (
     <main className={`login-page${admin ? " login-page--admin" : ""}`}>
-      <div className="login-brand"><Brand /><span className="eyebrow">{admin ? "Administration" : "Player access"}</span></div>
+      <div className="login-brand"><Brand /><ThemeToggle /></div>
       <div className="login-composition">
         <div className="login-story">
           <div className="diamond-aperture" aria-hidden="true"><span /><span /><span /></div>
           <p className="eyebrow">{admin ? "A clear perspective" : "Every market. One place."}</p>
-          <h1 className="type-display">{admin ? <>Clarity.<br /><span className="text-accent">In every detail.</span></> : <>Your daily<br /><span className="text-accent">point of view.</span></>}</h1>
+          <h1 className="type-display">{admin ? <>Clarity.<br /><span className="text-accent">In every detail.</span></> : <>The day.<br />The numbers.<br /><span className="text-accent">Your next play.</span></>}</h1>
           <p className="text-secondary">{admin ? "A focused workspace for the Diamond experience." : "Follow your markets. Know the timing. Stay close to every result."}</p>
           <div className="login-signature"><span aria-hidden="true" /><p className="type-caption text-muted">{admin ? "Secure administration" : "A considered space for your next play"}</p></div>
         </div>
