@@ -1,5 +1,44 @@
 # Design direction
 
+## Current direction — Window 4B0
+
+**Light is the first-visit default; Dark is an explicit optional preference.** This approved requirement supersedes the historical dark-primary direction below. The shared system is a luminous betting terminal: pearl `#f6f5f0`, white surfaces, dark ink `#202923`, metallic gold `#e3c46e`, emerald OPEN `#176943`, and restrained warm reflections. Dark adapts the same materials to charcoal `#0d1110`, translucent green-charcoal glass and champagne. It is not the source palette inverted.
+
+Geist Sans remains the display/body family, with stronger, tightly tracked headings; Geist Mono remains the utility face for results, countdowns and references. No new font/image dependency. The visual signature is polished gold action surfaces and framed two-digit result tiles, supported by luminous market edges. Home groups greeting and wallet in a lit panel; the wallet has a restrained faceted corner and prominent real balance. OPEN cards have a static emerald indicator, closing cards an amber edge, and disabled cards quieter surfaces. Market links still say **View** and open existing detail; Home/mobile Play still selects markets. No bet-entry workflow exists.
+
+### Theme architecture
+
+- `globals.css` owns semantic palettes under `:root,[data-theme="light"]` and `[data-theme="dark"]`. Shared components consume background/surface/glass, text, border, accent, gaming gold, status, focus, input, navigation, ticket, result, reflection and shadow tokens. Readable accent text is separate from the gold action fill. Print retains its intentional white receipt adaptation.
+- `src/lib/ui/theme.ts` defines the `light | dark` preference and static initializer. Root HTML declares Light. A tiny parser-blocking inline script in the root head reads only `localStorage["diamond-theme"]` before body paint. Only the exact value `dark` overrides Light; absent/invalid/blocked storage means Light. OS appearance is never consulted; a first visit writes no preference.
+- `ThemeToggle` uses `useSyncExternalStore`: server snapshot Light, then the initialized root attribute after hydration. `suppressHydrationWarning` is narrowly applied to `<html>` for that expected attribute change; component markup stays stable. CSS paints toggle selection from the root attribute even before hydration updates `aria-pressed`. Mount-time storage reconciliation handles another tab changing preference before subscription. Storage events synchronize open tabs; a custom event synchronizes controls in the current document.
+- Selection applies immediately and persists locally. If storage is unavailable, it still works for the visit. The preference contains no identity/session data and authorizes nothing. No theme library, context wrapper, API, cookie or auth change was needed. The old fixed dark browser `theme-color` was removed; native controls follow CSS `color-scheme`.
+
+### Header, motion and accessibility
+
+Light/Dark buttons appear in player, Admin, both login and design-studio headers. Each has an accessible name, `aria-pressed`, native Enter/Space behavior and visible focus; targets are at least 44×44px. Desktop/login/studio display text labels. Compact player/Admin headers retain sun/moon icons and accessible labels. Below 768px player balance gets a separate row; Admin uses two rows to avoid title collisions. Existing navigation, Account and Radix focus/dismissal behavior remain intact.
+
+Numeric values remain server-owned. Money, countdowns and result strings retain existing behavior, including `00`/`07`. Text/status tokens prioritize contrast over metallic effects; disabled controls retain readable text. Danger-hover text has its own contrast token. Hover lift stays at 2px, and the action reflection runs only on hover. Existing MotionConfig and the CSS reduced-motion backstop remain; reduced motion also removes the reflection. No continuous shine or flashing states were added.
+
+### Regression surface and scope
+
+`/dev/design-system` shows Light and Dark specimens together (number, money, input, action, OPEN/closing/error), while remaining buttons, inputs, tabs, overlays, toast, feedback, table, navigation and sample ticket follow the global choice. The page remains development-only. Ticket styling is a primitive specimen, not Window 4B functionality.
+
+Retrofitted through shared styles: `/login`, `/admin/login`, `/`, `/markets`, `/markets/[slug]`, `/results`, player navigation/Account, `/wallet` and `/my-bets` placeholders, `/play` → `/markets`, Admin protected shell/placeholder and development previews. Backend/domain/API/schema/session behavior is unchanged. The verification record below records measured results.
+
+### Window 4B0 browser verification — 2026-09-07
+
+Final gates: `npm.cmd run typecheck` PASS; `npm.cmd run lint` PASS; `npm.cmd test` PASS (232 tests, 18 files); `npm.cmd run build` PASS; `git diff --check` PASS. Backend integration suites were not rerun for this frontend-only change.
+
+Cached Playwright/Chromium exercised the actual application and existing APIs against an isolated disposable MongoDB replica set. The configured database and `.env` were untouched. Synthetic accounts/results existed only in QA; browser interception supplied delay/error/empty/disabled cases. No dependencies were added or removed. Temporary scripts, screenshots and credentials were removed before final gates.
+
+- 120 route/theme/viewport checks: both themes at **1440×1000, 768×1024, 375×812, 320×812 and 812×375**, across `/login`, `/admin/login`, `/`, `/markets`, `/markets/faridabad`, `/markets/disawar`, `/results?range=7d`, `/dev/design-system`, `/wallet`, `/my-bets`, `/play` and `/admin`. Zero horizontal overflow; no normal-route console or hydration errors.
+- Fresh state with OS Dark rendered Light. Explicit Dark and Light survived reload. New navigation and existing-tab synchronization passed. Blocking framework chunks still painted the saved palette before hydration. Invalid storage fell back to Light; blocked storage retained a per-visit switch without crashing.
+- Enter/Space, pressed semantics and focus rings passed. Theme/navigation targets measured at least 44×44px. Menus and modal/sheet/drawer/confirmation specimens dismissed with Escape and returned focus. Reduced-motion skeleton duration was 0.01ms; reflection is disabled under reduced motion.
+- Emulated safe-area insets: 375/320 portrait used top 44px and bottom 34px; 812×375 landscape used left/right 44px and bottom 21px. Headers/navigation cleared those insets, and final market content could scroll fully above the bottom bar.
+- Loading, errors, retry, empty results/markets, disabled market, unknown market, login error/loading/password visibility, filtered `07`, leading `00`, toast and Admin drawer passed. Injected failed HTTP requests were expected only in failure tests.
+- All 22 measured semantic contrast pairs passed: text/action/status pairs ≥4.5:1; input border/focus pairs ≥3:1. Light muted text 5.27:1, OPEN 5.77:1, input border 3.61:1; Dark equivalents 6.06:1, 7.31:1 and 4.62:1. These measurements plus browser inspection are not a complete accessibility certification.
+- Fixed during QA: Admin title/control overlap at 320px (verified directly at 320/375/768/1440), preference changes arriving before hydration, disabled-control readability, danger-hover contrast and a temporary text-encoding defect. No unresolved application defect remains from this audit. Physical iOS Safari/Android and assistive-technology checks remain outside Chromium emulation coverage.
+
 Read [CODEX_RULES.md](CODEX_RULES.md) first. These requirements are authoritative and originate from the approved Window 1 brief. DOMAIN_RULES.md owns business rules; the roadmap limits implementation scope. Future-facing descriptions do not imply implemented features.
 
 ## TICKET UX — DOCUMENT NOW, BUILD LATER

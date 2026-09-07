@@ -1,5 +1,7 @@
 "use client";
 
+import { ThemeToggle } from "@/components/ui/theme-toggle";
+
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ArrowUpRight, Ban, CircleCheck, Diamond as DiamondIcon, ShieldAlert, UserRound, Wallet } from "lucide-react";
@@ -66,7 +68,7 @@ export function DesignShowcase() {
           <p className="eyebrow">Development only · not linked from production navigation</p>
           <h1 className="type-page-title">Design studio</h1>
         </div>
-        <nav className="studio-links" aria-label="Shell previews">
+        <ThemeToggle /><nav className="studio-links" aria-label="Shell previews">
           <Link className="text-link" href="/dev/player/home">Player shell <ArrowUpRight aria-hidden="true" /></Link>
           <Link className="text-link" href="/dev/admin/dashboard">Admin shell <ArrowUpRight aria-hidden="true" /></Link>
           <Link className="text-link" href="/login">Player login <ArrowUpRight aria-hidden="true" /></Link>
@@ -74,6 +76,13 @@ export function DesignShowcase() {
         </nav>
       </header>
 
+      <section className="studio-section" aria-labelledby="themes-heading">
+        <div className="studio-section-heading"><h2 id="themes-heading" className="type-section-title">Light first. Dark by choice.</h2><p>Use the header control to inspect the full page in either theme.</p></div>
+        <div className="theme-comparison">{(["light", "dark"] as const).map(theme => <div key={theme} data-theme={theme} className="theme-specimen">
+          <p className="eyebrow">{theme === "light" ? "Light · default" : "Dark · optional"}</p>
+          <GlassCard className="stack"><div className="between"><h3 className="type-card-title">Material specimen</h3><Badge tone="success">Open</Badge></div><div className="between"><span className="result-value">07</span><Money paise={125000} size="medium" /></div><Input label={theme + " input specimen"} placeholder="Enter an amount" /><div className="row"><Button onClick={() => notify("Play specimen")}>Play specimen</Button><Badge tone="warning">Closing soon</Badge></div><Alert tone="danger" title="Error specimen">Clear feedback in either theme.</Alert></GlassCard>
+        </div>)}</div>
+      </section>
       <section className="studio-hero">
         <div className="studio-hero-copy">
           <Badge tone="info">Premium design system</Badge>
