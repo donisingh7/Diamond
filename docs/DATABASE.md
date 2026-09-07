@@ -687,3 +687,50 @@ reuse collides), `walletTransactions {userId, createdAt}` (admin ledger read),
   `ADMIN_CREDIT:DEMO_OPENING_BALANCE:test1:v1`, reason `Demo environment opening balance` — never
   a direct balance write, so a rerun never adds a second ₹10,000. No password or hash is printed.
   Deterministic, idempotent, non-destructive; it is not a reset script.
+
+### Window 6A2 - admin operations (withdrawal decisions, market config, result declaration, payout rate)
+
+Backend / domain / API only. **Three additive schema fields + four additive indexes**; no
+collection added, no field type changed, no index dropped.
+
+- `withdrawals`:
+  - `+ decisionRequestId` (`String`, `trim`) - the admin's client UUID for the terminal
+    "Mark Paid & Approve" / reject decision. Backed by a new **`{ decisionRequestId: 1 }` unique
+    sparse** index: a reuse of one request id for a different withdrawal or a materially
+    different decision is `DUPLICATE_REQUEST`. PENDING rows carry no value and are not indexed.
+  - `+ paymentReference` (`String`, `trim`, `maxlength 200`) - the operator's out-of-Diamond
+    payout reference (UTR / txn id) recorded on approve.
+  - `+ decisionNote` (`String`, `trim`, `maxlength 500`) - bounded operator note.
+  - **None of these hold the sensitive `paymentDetails`.** `paymentDetails` stays `select:false`;
+    the raw BANK / UPI instrument is returned by exactly one endpoint,
+    `GET /api/admin/withdrawals/[id]`, and never appears in a list DTO, an audit row, an error
+    or a log.
+  - `+ { requestedAt: -1, _id: -1 }` index - the global admin withdrawal list (newest requested
+    first, stable keyset cursor).
+- `marketRounds`:
+  - `+ resultDeclaredRequestId` (`String`, `trim`) - the admin's client UUID for the two-step
+    result declaration. Backed by a new **`{ resultDeclaredRequestId: 1 }` unique sparse**
+    index. A round that already has a `result` is `RESULT_ALREADY_DECLARED` (no unrestricted
+    correction endpoint); an exact `(round, requestId, result)` replay returns the original
+    declaration. Declaration writes `result` + `resultDeclaredAt` + `declaredByAdminId` only -
+    `settlementStatus` stays `PENDING`, no bet / wallet write (settlement is Window 7A).
+  - The existing `pre('validate')` rule (`resultDeclaredAt >= closesAt`) still holds; the
+    service also enforces `now >= closesAt` with server time before any write.
+- `bets`:
+  - `+ { createdAt: -1, _id: -1 }` index - the global admin bet list (READ ONLY; newest first,
+    stable keyset cursor). No admin path edits / deletes a `Bet` or a `BetRevision`.
+- `markets` / `platformSettings` / `auditLogs`: **no schema or index change.** Market
+  enable/disable + schedule edits are `updateOne` on the `markets` config row only - persisted
+  `marketRounds` (`opensAt` / `editCutoffAt` / `closesAt`) are never rewritten
+  (`ensureMarketRound` snapshots at creation and never recomputes). `platformSettings.payoutMultiplier`
+  updates affect only future bet placements; every existing `bets.payoutMultiplierSnapshot`
+  is left untouched - no mass update.
+
+New error codes in `lib/errors/domain-error.ts`: `RESULT_TOO_EARLY` (422),
+`RESULT_ALREADY_DECLARED` (409). `DUPLICATE_REQUEST` (409), `WITHDRAWAL_NOT_PENDING` (409),
+`WITHDRAWAL_NOT_FOUND` (404), `MARKET_NOT_FOUND` (404), `ROUND_NOT_FOUND` (404),
+`INVALID_INPUT` (400), `FORBIDDEN` / `UNAUTHENTICATED` are reused verbatim.
+
+The four new indexes are picked up by `ensureIndexes()` (additive `createIndexes`, never
+`syncIndexes`) and by `npm run db:provision` (non-destructive). They were not applied to the
+configured Atlas deployment in this window.

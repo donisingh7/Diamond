@@ -321,3 +321,51 @@ set (12 collections, indexes, foundation config; `test1` + three admins hashed; 
 deployment database - login for `test1` (PLAYER) and `doni` / `pankaj` / `gopal` (ADMIN) plus
 cross-role rejection verified there through the auth service. All temporary drivers were deleted
 before commit; no URI, credential, cookie or hash was printed.
+
+## Window 6A2 — admin operations (withdrawal decisions, market config, result declaration, payout rate)
+
+Every new route (`src/app/api/admin/{withdrawals,markets,results,settings,audit,dashboard,bets}`)
+is `requireAdmin()` + `force-dynamic` + strict Zod; every `POST` also `isTrustedOrigin` (`403`
+on a mismatched `Origin`). Anonymous → `401`, PLAYER → `403`. No admin id or role is read from
+the request — the actor is always the session. The same-origin exemption for `GET` matches the
+rest of the codebase.
+
+**Sensitive payout instrument.** `withdrawals.paymentDetails` (bank account number / IFSC /
+account-holder name, or UPI id) stays `select:false`. The raw instrument is returned by exactly
+one endpoint — the ADMIN-only `GET /api/admin/withdrawals/[id]` (`+paymentDetails` projection),
+as `payoutDestination`, so the admin can make the real out-of-Diamond transfer. It is **never**:
+in a list DTO (`AdminWithdrawalListItem` carries only the pre-masked `destinationSummary`); in an
+`auditLogs` `before` / `after` (the `WITHDRAWAL_APPROVED` / `WITHDRAWAL_REJECTED` snapshots carry
+`destinationSummary` + `paymentReference` only); in an error message; or in a test / server log.
+Integration and HTTP verification both assert the raw account number does not appear in any list
+payload or audit row. At-rest encryption of `paymentDetails` remains documented future
+production hardening, not a weak custom scheme invented here.
+
+**Explicit confirmation gates.** "Mark Paid & Approve" requires `confirmPaid: true` (a Zod
+`z.literal(true)` — a body without it, or with `false` / `"true"`, is `400` and nothing is
+approved). Result declaration requires `confirm: true` the same way, and is a two-step
+`prepare` (no mutation) → `declare` contract.
+
+**Audit redaction stays authoritative.** The 6A1 `writeAuditLog` redactor covers every new
+action (`WITHDRAWAL_APPROVED`, `WITHDRAWAL_REJECTED`, `MARKET_ENABLED`, `MARKET_DISABLED`,
+`MARKET_SCHEDULE_UPDATED`, `RESULT_DECLARED`, `PAYOUT_RATE_UPDATED`). The audit-browser read
+path (`GET /api/admin/audit`) additionally re-runs `redactAuditSnapshot` over `before` / `after`
+as defence in depth, so no `password` / hash / `token` / OTP / `SESSION_SECRET`-style key can
+surface even if a row were ever written past the writer.
+
+### Verified end-to-end (Window 6A2)
+
+Real `next dev` + a disposable in-memory replica set, 43 HTTP assertions, all PASS: anonymous
+`GET` on every admin route → `401`; a PLAYER session → `403` on every admin route; an ADMIN
+session → `200`; a mismatched `Origin` on `POST .../approve` → `403`; approve without
+`confirmPaid` → `400`, with `confirmPaid: true` → `200` `APPROVED`, exact replay → `200`
+`idempotentReplay`, same id + different reference → `409 DUPLICATE_REQUEST`; reject without a
+reason → `400`, with a reason → `200` `REJECTED`; `GET .../withdrawals/[id]` returns
+`payoutDestination` while `GET .../withdrawals` does not (raw account number absent from the list
+JSON); market status disable / enable + schedule update → `200`, an impossible schedule → `400`;
+result `prepare` on a closed round → `200` preview (no mutation), `declare` `confirm:true` →
+`200` with `"07"` preserved as a string, `declare` without `confirm` → `400`, exact replay →
+`200` `idempotentReplay`, already-declared → `409 RESULT_ALREADY_DECLARED`; rate read `90` →
+update `92` → read `92`, invalid `0` → `400`; audit list filtered by `action`, no secret
+material in any row; dashboard aggregates present; `GET /api/admin/bets` → `200`. No cookie,
+token, bank / UPI value or DB URI was printed; the temporary driver was deleted before commit.

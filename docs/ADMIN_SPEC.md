@@ -225,3 +225,34 @@ canonical collections + indexes + foundation markets/settings; makes every colle
 Atlas/Explorer even when empty) and `npm run db:seed-demo` (guarded by `DEMO_SEED_ENABLED=true`;
 creates `test1` PLAYER + `doni` / `pankaj` / `gopal` ADMIN, hashed; the demo player's ₹10,000
 opening balance is a keyed `ADMIN_CREDIT`, never a direct balance write; idempotent).
+
+## Window 6A2 — implemented (backend only, no UI)
+
+Live under `src/app/api/admin/` (all `apiRoute` + `force-dynamic` + `requireAdmin()`; every
+mutation also `isTrustedOrigin`; anonymous → `401`, PLAYER → `403`; every response carries
+`serverNow`). Codex owns the Window 6B UI that will consume these.
+
+| Capability | Route(s) | Notes |
+| --- | --- | --- |
+| Global withdrawal list | `GET /api/admin/withdrawals` | newest **requested** first, keyset cursor; `status` / `method` / `search` (player loginId·email·phone) / `dateFrom` / `dateTo` filters; player summary batch-loaded (no N+1); MASKED `destinationSummary` only |
+| Withdrawal detail (sensitive) | `GET /api/admin/withdrawals/[id]` | the ONLY endpoint returning the raw `payoutDestination` (BANK: holder / number / IFSC / bankName · UPI: upiId) — never in a list, an audit row, an error or a log — plus the player's live wallet |
+| Mark Paid & Approve | `POST /api/admin/withdrawals/[id]/approve` | requires `confirmPaid: true` (a body without it never approves) + `clientRequestId` (uuid); finalizes RESERVED only (`reserved -= X`, available **unchanged** — never a second debit), `PENDING → APPROVED`, immutable `WITHDRAWAL_APPROVED` ledger + audit, decision metadata; **no real bank/UPI transfer**; idempotent on `(withdrawal, clientRequestId)`, conflicting reuse → `DUPLICATE_REQUEST` |
+| Reject withdrawal | `POST /api/admin/withdrawals/[id]/reject` | required bounded `reason` + `clientRequestId`; `reserved -= X` / `available += X`, `PENDING → REJECTED`, `WITHDRAWAL_RELEASED` ledger + `WITHDRAWAL_REJECTED` audit; no earlier transaction edited/deleted |
+| Market list / detail | `GET /api/admin/markets`, `GET /api/admin/markets/[id]` | identity + schedule (`HH:MM` and minutes, `closeDayOffset`, `editLockMinutesBeforeClose`) + `enabled` + server-derived lifecycle + current-round snapshot; `[id]` is the 24-hex market id |
+| Enable / emergency-disable | `POST /api/admin/markets/[id]/status` | `{ enabled }`; disable blocks new bets immediately through the existing server-authoritative checks; historical `marketRounds` untouched; `MARKET_ENABLED` / `MARKET_DISABLED`, idempotent (no second audit) |
+| Schedule configuration | `POST /api/admin/markets/[id]/schedule` | partial `{ openTime?, closeTime?, closeDayOffset?, editLockMinutesBeforeClose? }` merged onto current + validated (ordering, ranges, cross-midnight, edit lock inside the round); applies to FUTURE rounds only — existing `marketRounds` snapshots never rewritten; `MARKET_SCHEDULE_UPDATED` with safe before/after |
+| Result — prepare / preview | `POST /api/admin/results/prepare` | STEP 1: validates admin / market / round / closed-state / result syntax; returns a sanitized preview + an explicit "settlement has NOT occurred" warning; NO mutation |
+| Result — declare | `POST /api/admin/results/declare` | STEP 2: `confirm: true` + `clientRequestId`; writes `marketRounds.result` + `resultDeclaredAt` + `declaredByAdminId` + `RESULT_DECLARED` audit; **no settlement** (no bet status change, no `WIN_CREDIT`, no wallet movement, `settlementStatus` stays `PENDING`); result is a two-char STRING `"00".."99"` (leading zero preserved, no numeric coercion); before close → `RESULT_TOO_EARLY`, already declared → `RESULT_ALREADY_DECLARED`, exact replay → original |
+| Payout rate read / update | `GET` + `POST /api/admin/settings/rate` | `POST { payoutMultiplier: int ≥ 1 }`; affects FUTURE bet placements only — every existing `bets.payoutMultiplierSnapshot` is left untouched (no mass update); `PAYOUT_RATE_UPDATED` with before/after; setting the current value is a no-op (`changed: false`, no audit) |
+| Audit browser | `GET /api/admin/audit` | bounded, newest first, keyset cursor; `action` / `actorAdminId` / `subjectUserId` / `entityType` / `dateFrom` / `dateTo` filters; `before` / `after` re-redacted on read — no password / hash / token / OTP / session secret can appear |
+| Operational summary | `GET /api/admin/dashboard` | server-calculated aggregates for the future Window 6B dashboard: active / disabled player counts, total available + reserved balances, pending withdrawal count + amount, today's (IST) bet count + stake, per-market lifecycle status, results pending / declared, recent admin activity; every value a real aggregate, no fabricated data, no N+1 |
+| Global bet list / detail | `GET /api/admin/bets`, `GET /api/admin/bets/[id]` | READ ONLY; newest first, keyset cursor; `playerId` / `market` / `status` / `entryMethod` / `businessDate` / `dateFrom` / `dateTo` filters; reuses the sanitized player bet + revision DTO + a player summary; detail includes full revision history; **no admin bet / revision mutation anywhere** |
+
+Audit actions added (through the single `writeAuditLog` writer / redactor): `WITHDRAWAL_APPROVED`,
+`WITHDRAWAL_REJECTED`, `MARKET_ENABLED`, `MARKET_DISABLED`, `MARKET_SCHEDULE_UPDATED`,
+`RESULT_DECLARED`, `PAYOUT_RATE_UPDATED` — the concrete names for the example
+`MARKET_TIME_CHANGED` / `GAME_RATE_CHANGED` / `WALLET_ADJUSTMENT` placeholders above (no
+business rule changed; consistent with 6A1's `ADMIN_WALLET_CREDIT` / `ADMIN_WALLET_DEBIT`).
+
+**Deferred to Window 7A:** settlement engine, `Bet` WON/LOST transition, `WIN_CREDIT`, payout
+wallet credits, settlement batching / summary. **Deferred to Window 6B (Codex):** all admin UI.

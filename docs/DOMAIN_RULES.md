@@ -1147,6 +1147,64 @@ not altered.
   `walletTransactions` row. Player deletion remains the only path that removes financial history,
   and only as part of removing the whole player.
 
+### Window 6A2 implementation clarification (no business rule changed)
+
+The frozen rules above (the four withdrawal states + their balance moves, admin approve
+finalises RESERVED / admin reject releases, no real payout; one 2-digit **string** result for a
+**closed** round with a review/confirmation step, no settlement editing once settled; rate
+changes affect only future bet snapshots; redacted admin audit on every meaningful action) are
+implemented as the admin operations backend — not altered.
+
+- **Manual withdrawal, end to end.** Player requests → Window 5A moves `available → reserved`,
+  status PENDING → **the admin transfers the money outside Diamond** → the admin calls
+  **Mark Paid & Approve** with an explicit `confirmPaid: true` (a request without it never
+  approves) → the system finalises RESERVED (`reserved -= X`, **available unchanged — never a
+  second debit**), `PENDING → APPROVED`, immutable `WITHDRAWAL_APPROVED` ledger + audit. There
+  is **no automatic payout** and no real bank/UPI API. Reject: `reserved -= X`, `available += X`,
+  `PENDING → REJECTED` + stored reason, `WITHDRAWAL_RELEASED` ledger + `WITHDRAWAL_REJECTED`
+  audit; no earlier transaction is edited or deleted.
+- **Withdrawal decision idempotency / concurrency.** DB-backed on `withdrawals.decisionRequestId`
+  (a client UUID, unique sparse index). An exact `(withdrawal, clientRequestId)` replay with the
+  same payload returns the original success; the same id for a different withdrawal, a
+  materially different decision (different `paymentReference` / note / reason), or the opposite
+  operation is `DUPLICATE_REQUEST`. Concurrent approve‖approve, reject‖reject, approve‖reject and
+  player-cancel‖admin-decision each resolve to exactly one terminal transition, one ledger row,
+  one audit row (the Window 5A CAS on `status:"PENDING"`); reserved balance never goes negative;
+  the wallet always matches the winner.
+- **Sensitive payout details.** The raw BANK / UPI instrument (`withdrawals.paymentDetails`,
+  `select:false`) is returned by exactly one endpoint — the ADMIN-only
+  `GET /api/admin/withdrawals/[id]` — so the admin can make the real transfer. It is never in a
+  list DTO, an audit `before` / `after`, a generic error, or a log. At-rest encryption of
+  `paymentDetails` remains documented future production hardening, not invented here.
+- **Market configuration vs history.** Enable / disable and schedule edits change only the
+  `markets` config row. Emergency disable blocks new betting immediately through the existing
+  server-authoritative eligibility checks — no per-round mutation. Persisted `marketRounds`
+  snapshots (`opensAt` / `editCutoffAt` / `closesAt`) are **never rewritten**; a schedule change
+  applies to rounds created after it, so today's already-materialised round keeps its instants.
+  Audit: `MARKET_ENABLED` / `MARKET_DISABLED` / `MARKET_SCHEDULE_UPDATED` (concrete names for
+  the example `MARKET_TIME_CHANGED` placeholder).
+- **Result declaration is declaration only.** A deliberate two-step backend contract:
+  `prepare` validates + previews with an explicit "settlement has NOT occurred" warning and
+  mutates nothing; `declare` requires `confirm: true` + a client UUID and writes
+  `marketRounds.result` + `resultDeclaredAt` + `declaredByAdminId` + a `RESULT_DECLARED` audit.
+  Allowed only when server time `>= closesAt` (exactly at close allowed; before → `RESULT_TOO_EARLY`).
+  The result is a two-character **string** `"00".."99"` — leading zero preserved, no numeric
+  coercion. It **never** settles: no `Bet` WON/LOST, no `WIN_CREDIT`, no wallet winnings, no
+  settlement summary; `settlementStatus` stays `PENDING`. A round that already has a result is
+  `RESULT_ALREADY_DECLARED` — there is no unrestricted correction endpoint (settlement, and an
+  immutable settled result, are Window 7A). Idempotency is DB-backed on
+  `marketRounds.resultDeclaredRequestId`.
+- **Payout rate is future-only.** `platformSettings.payoutMultiplier` update (validated,
+  server-authoritative, `PAYOUT_RATE_UPDATED` audit with safe before/after) affects only
+  subsequent bet placements. Bet placement already snapshots the live multiplier into
+  `bets.payoutMultiplierSnapshot`; existing bets are **never** read or mass-updated, and Window
+  7A settlement uses each bet's stored snapshot. Setting the current value is a no-op.
+- **Admin audit browser.** Read-only, bounded, filterable; `before` / `after` re-redacted on
+  read so no password / hash / token / OTP / session secret can appear. The 6A1 redaction
+  writer stays authoritative.
+- **No admin bet mutation.** The global admin bet list / detail (+ revision history) is READ
+  ONLY — no route or service edits, deletes, or re-versions a `Bet` or `BetRevision`.
+
 ## USER-FACING BET REFERENCE
 
 Never expose Mongo ObjectId as the primary user-facing ticket/bet number.

@@ -21,6 +21,16 @@ export const auditActions = [
   "PLAYER_DELETION_COMPLETED",
   "ADMIN_WALLET_CREDIT",
   "ADMIN_WALLET_DEBIT",
+  // Window 6A2 — admin operations. `MARKET_SCHEDULE_UPDATED` / `RESULT_DECLARED` /
+  // `PAYOUT_RATE_UPDATED` are the concrete names for the roadmap's example
+  // `MARKET_TIME_CHANGED` / `GAME_RATE_CHANGED` placeholders (no business rule changed).
+  "WITHDRAWAL_APPROVED",
+  "WITHDRAWAL_REJECTED",
+  "MARKET_ENABLED",
+  "MARKET_DISABLED",
+  "MARKET_SCHEDULE_UPDATED",
+  "RESULT_DECLARED",
+  "PAYOUT_RATE_UPDATED",
 ] as const;
 export type AuditAction = (typeof auditActions)[number];
 
