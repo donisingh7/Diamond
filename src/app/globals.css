@@ -1,5 +1,51 @@
 @import "tailwindcss";
 
+/* Player wallet: prominent available funds, compact immutable records. */
+.wallet-page { min-width: 0; }
+.wallet-overview-layout { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); gap: 24px; align-items: start; }
+.wallet-overview-layout > * { min-width: 0; }
+.wallet-reserved { display: grid; gap: 12px; padding-top: 22px; border-top: 1px solid var(--border); }
+.wallet-reserved > div { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; justify-content: space-between; }
+.wallet-page .money { white-space: normal; overflow-wrap: anywhere; }
+.wallet-records { list-style: none; margin: 0; padding: 0; display: grid; }
+.wallet-records > li { padding-block: 20px; min-width: 0; border-bottom: 1px solid var(--border); }
+.wallet-records > li:first-child { padding-top: 0; }
+.wallet-records > li:last-child { border-bottom: 0; padding-bottom: 0; }
+.wallet-record-main { display: flex; align-items: start; gap: 12px; min-width: 0; }
+.wallet-record-main > div { min-width: 0; overflow-wrap: anywhere; }
+.wallet-record-main > div:first-of-type { flex: 1; }
+.wallet-record-main .badge { flex-shrink: 0; }
+.wallet-record-amount { display: flex; flex-direction: column; align-items: flex-end; max-width: 42%; text-align: right; gap: 4px; }
+.wallet-record-amount > .money { font-weight: 600; }
+.wallet-movement-icon { display: grid; place-items: center; width: 36px; height: 36px; flex-shrink: 0; background: var(--accent-subtle); color: var(--accent); border-radius: var(--radius-sm); }
+.wallet-deltas { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 12px; color: var(--text-secondary); font-size: .75rem; }
+.wallet-deltas > span { min-width: 0; }
+.wallet-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.withdrawal-form { border-top: 3px solid var(--gaming-gold); }
+.withdrawal-form form[hidden] { display: none; }
+.withdrawal-available { display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: space-between; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-elevated); }
+.withdrawal-method { display: flex; flex-wrap: wrap; gap: 12px; border: 0; padding: 0; min-width: 0; }
+.withdrawal-method legend { margin-bottom: 12px; }
+.withdrawal-method label { display: flex; align-items: center; gap: 10px; padding: 12px 16px; min-height: 48px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); cursor: pointer; }
+.withdrawal-method label:has(input:checked) { border-color: var(--accent); background: var(--accent-subtle); }
+.withdrawal-method input { width: 18px; height: 18px; accent-color: var(--accent); }
+.wallet-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.wallet-actions .button { flex: 1 1 180px; }
+.withdrawal-record { display: flex; flex-direction: column; align-items: stretch; gap: 12px; }
+.withdrawal-record > .button { align-self: start; }
+.withdrawal-cancel { padding: 20px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface-elevated); }
+@media (max-width: 850px) {
+  .wallet-overview-layout { grid-template-columns: minmax(0,1fr); }
+}
+@media (max-width: 480px) {
+  .wallet-page .glass-panel { padding: 24px 18px; }
+  .wallet-movement-icon { display: none; }
+  .wallet-record-main { flex-wrap: wrap; }
+  .wallet-record-amount { max-width: 100%; }
+  .wallet-actions { flex-direction: column; }
+  .wallet-actions .button { flex: auto; width: 100%; }
+}
+
 /* My Bets keeps the public reference and wager at the center of each record. */
 .my-bets,.bet-detail { min-width: 0; }
 .my-bets-list,.bet-revisions { display: grid; gap: 16px; list-style: none; margin: 0; padding: 0; }
