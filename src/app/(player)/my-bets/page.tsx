@@ -1,4 +1,4 @@
-import { ComingSoon } from "@/components/player/coming-soon";
+import { MyBets } from "@/components/player/my-bets";
 
 export const metadata = { title: "My Bets · Diamond" };
-export default function MyBetsPage() { return <ComingSoon title="My Bets" description="Your bet history will be available here. For now, explore market schedules and results." />; }
+export default function MyBetsPage() { return <MyBets />; }
