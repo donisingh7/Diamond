@@ -1168,3 +1168,38 @@ fixture convention):
 
 No HTTP driver, no full integration/HTTP suite run, no configured Atlas mutation. No frontend
 file was touched. No Window 7A2 orchestration was started.
+
+## Window 7A2 handoff status
+
+Window 7A2 (admin settlement orchestration — the minimal admin trigger over the 7A1
+`settleRound()` engine). **No settlement dashboard, no result correction / re-settlement, no
+scheduled/cron runner, no frontend.**
+
+- `src/modules/admin/services/admin-settlement.service.ts` — `settleDeclaredRound({ actorAdminId,
+  marketId, businessDate? })` → `AdminRoundSettlement` (7A1 `RoundSettlementSummary` + `market` +
+  `auditWritten`). Resolves market + round **without creating one** (`ROUND_NOT_FOUND` if absent),
+  hands off to `settleRound()` (which owns the lifecycle + idempotency), then writes a single
+  `ROUND_SETTLED` audit row **only** when `summary.alreadySettled === false` — a replay or a lost
+  concurrency race adds no row. Never reads or writes `round.result`.
+- `src/app/api/admin/results/settle/route.ts` — `POST`, `apiRoute` + `isTrustedOrigin` +
+  `requireAdmin`, strict `settleRoundSchema` (`{ marketId, businessDate?, confirm: true,
+  clientRequestId }`, **no `result` field**). Returns `{ data: { settlement } }`.
+- `src/modules/admin/validators/admin-ops-input.ts` — **+ `settleRoundSchema` / `SettleRoundRequest`**.
+- `src/modules/audit/services/audit-log.service.ts` — **+ `"ROUND_SETTLED"`** audit action.
+
+## Verification record - 2026-09-08 (Window 7A2)
+
+| Check | Result |
+| --- | --- |
+| `npm.cmd run typecheck` / `npm.cmd run lint` | PASS; no warnings |
+| `npm.cmd run test -- admin-settlement-route admin-ops-validators` | PASS; 41 tests (route CSRF/ADMIN-gate/strict-body + `settleRoundSchema`) |
+| `npm.cmd run test:integration -- admin-settlement` | PASS; 5 tests against a disposable MongoDB 8.2.6 replica set |
+| `git diff --check` | PASS |
+| Configured Atlas | **untouched** |
+
+Targeted integration coverage (`admin-settlement.integration.ts`, service layer): ADMIN settles a
+declared round (winner credited `1000 × 90`, one `ROUND_SETTLED` row carrying the admin id +
+round id + totals, `round.result` unchanged); `ROUND_NOT_FOUND` for an absent round;
+`RESULT_NOT_DECLARED` neither audits nor moves money; exact replay → `alreadySettled: true` /
+`auditWritten: false`, no re-credit, still one audit row; 3 concurrent invocations → one
+`WIN_CREDIT`, one `ROUND_SETTLED` row, balance credited once. No frontend file was touched.
