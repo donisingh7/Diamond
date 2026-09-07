@@ -713,5 +713,212 @@ rows. The dev server, the disposable database and the temporary script were stop
 afterward.
 
 No live `npm run db:check` / `npm run db:seed` against the user's configured database was run in
-this window; all database verification used disposable replica sets. Window 2A visual quality
+this window; all Window 5A database verification used disposable replica sets. Window 2A visual quality
 remains pending Codex visual-browser refinement.
+
+## Window 6A1 handoff status
+
+Window 6A1 (admin player management, manual wallet movement, DB provisioning & demo seed) is
+complete. **Backend / financial domain only - no admin UI.** See ARCHITECTURE.md's "Window 6A1"
+section for the design, DOMAIN_RULES.md's "Window 6A1 implementation clarification" for the
+frozen-rule mapping, API_CONTRACTS.md's "Window 6A1 - implemented admin player & wallet contract"
+for exact shapes, DATABASE.md's Window 6A1 section for the one additive schema field, and
+ADMIN_SPEC.md / SECURITY_AND_AUTH.md's Window 6A1 sections.
+
+Implemented:
+
+- `src/modules/admin/services/admin-player.service.ts` - `createPlayer` (role server-forced
+  PLAYER + Rs 0 wallet + `PLAYER_CREATED`, one transaction; `LOGIN_ID_TAKEN` / `IDENTIFIER_TAKEN`),
+  `listPlayers` (PLAYER only, newest-first `(createdAt, _id)` cursor, `search` on normalized
+  loginId / email substring + exact phone, `status` filter, wallet balances + bet/withdrawal
+  counts batch-loaded via one `$in` + two `$group` - no N+1), `getPlayerDetail`,
+  `disablePlayer` / `enablePlayer` (CAS `updateOne` in a transaction; disable also
+  `revokeAllUserSessions(userId, session)`; audit only on a real transition; idempotent),
+  `resetPlayerPassword` (hash + `passwordChangedAt` + revoke all sessions + audit, one
+  transaction; hash never returned), `getPlayerWalletView`, `listPlayerBetsForAdmin` /
+  `listPlayerWithdrawalsForAdmin` (reuse the sanitized player read services), `resolvePlayer`
+  (missing / malformed / ADMIN id all an indistinguishable `PLAYER_NOT_FOUND`).
+- `src/modules/admin/services/admin-wallet.service.ts` - `adminCreditWallet` / `adminDebitWallet`
+  sharing one `adjust(type, input, options)`: `resolvePlayer` -> `assertAdminAdjustmentAmount`
+  (>= Rs 1) -> required non-empty `reason` -> `createPlayerWallet` -> key
+  `ADMIN_WALLET_ADJUSTMENT:<adminId>:<clientRequestId>` (operation-agnostic) -> existing-success
+  recovery first (mismatch on type / amount / player / reason / reference -> `DUPLICATE_REQUEST`)
+  -> one `withTransaction` doing `applyWalletMovement` (immutable `ADMIN_CREDIT` / `ADMIN_DEBIT`
+  ledger row carrying `adminReason` + `adminPaymentReference` + `createdByAdminId`) +
+  `writeAuditLog` (skipped on the in-transaction idempotent-replay path so a write-conflict
+  retry never double-audits) -> E11000 recovery outside the aborted transaction.
+  `afterWalletMovement` test seam. `listPlayerWalletTransactionsForAdmin` ->
+  `AdminWalletTransactionDTO` (adds `reason` / `paymentReference` / `actorAdminId`, never
+  `idempotencyKey`).
+- `src/modules/admin/services/player-deletion.service.ts` - `playerDeletionService.purgePlayer()`
+  implementing the Window 6 `PlayerDeletionService` contract + `purgePlayerById`. One
+  `withTransaction`: delete `betRevisions` (by userId or betId), `bets`, `withdrawals`,
+  `walletTransactions`, `wallets`, `sessions`, `otpRequests`, every `auditLogs` row with
+  `subjectUserId` OR `entityId` = the player, then CAS-delete the `user` on `{role:"PLAYER"}`;
+  finally `writeAuditLog(PLAYER_DELETION_COMPLETED)` with `entityType:"Player"` and NO entityId /
+  subjectUserId / snapshot. ADMIN targets refused. No tombstone, no deny-list.
+- `src/modules/audit/services/audit-log.service.ts` - `writeAuditLog(input, session?)`, the single
+  `auditLogs` writer. `redactAuditSnapshot` deep-replaces any `password` / `passwordHash` /
+  `newPassword` / `token` / `codeHash` / `secret`-style key (case-insensitive, any depth). Seven
+  actions: `PLAYER_CREATED`, `PLAYER_DISABLED`, `PLAYER_ENABLED`, `PLAYER_PASSWORD_RESET`,
+  `PLAYER_DELETION_COMPLETED`, `ADMIN_WALLET_CREDIT`, `ADMIN_WALLET_DEBIT`.
+- `src/modules/admin/validators/admin-player-input.ts` - strict Zod for every route
+  (`createPlayerSchema` has NO `role` field).
+- `src/app/api/admin/players/` - 10 route files: `GET|POST /players`, `GET|DELETE /players/[id]`,
+  `POST /players/[id]/status`, `POST /players/[id]/reset-password`, `GET /players/[id]/wallet`,
+  `GET /players/[id]/wallet/transactions`, `POST /players/[id]/wallet/credit`,
+  `POST /players/[id]/wallet/debit`, `GET /players/[id]/bets`, `GET /players/[id]/withdrawals`.
+  All `apiRoute` + `force-dynamic` + `requireAdmin()`; every mutation also `isTrustedOrigin`.
+  Anonymous -> `401`, PLAYER -> `403`. `201` on create, `200` elsewhere.
+- `src/modules/wallet/models/wallet-transaction.model.ts` - **+ `adminReason` (<= 500),
+  + `adminPaymentReference` (<= 200)**, both optional, additive. No index change.
+- `src/modules/wallet/services/wallet.service.ts` - `WalletMovementInput` / `NamedMovementInput`
+  gained optional `adminReason` / `adminPaymentReference`; `applyWalletMovement` persists them;
+  `assertSameOperation` compares them (replayed key + materially different reason/reference ->
+  `DUPLICATE_REQUEST`). No other change.
+- `src/modules/auth/services/session.service.ts` - `revokeAllUserSessions(userId, session?)`
+  gained the optional transaction session param.
+- `src/lib/errors/domain-error.ts` - added `PLAYER_NOT_FOUND` (404), `LOGIN_ID_TAKEN` (409),
+  `IDENTIFIER_TAKEN` (409). `INVALID_AMOUNT` / `INSUFFICIENT_BALANCE` / `MONEY_OUT_OF_RANGE`
+  (422), `DUPLICATE_REQUEST` (409), `INVALID_INPUT` (400), `FORBIDDEN` / `UNAUTHENTICATED`
+  reused verbatim.
+- `scripts/provision-db.ts` (`npm run db:provision`) + `scripts/seed-demo.ts`
+  (`npm run db:seed-demo`) + `getDemoSeedEnv()` in `src/lib/config/env.ts` +
+  `.env.example` placeholders (`DEMO_SEED_ENABLED`, `DEMO_PLAYER_PHONE`, four demo password
+  vars - all blank).
+
+Deliberately **not** done (out of window): any admin UI (Codex owns the frontend);
+`/api/admin/withdrawals` approve/reject; admin market config, result declaration, game-rate API;
+a full admin audit-browser API; settlement / `WIN_CREDIT`. The Window 5A internal
+`approveWithdrawalByAdmin` / `rejectWithdrawalByAdmin` primitives are unchanged and still
+unrouted - Window 6A2 routes them under "Mark Paid & Approve" (finalizes RESERVED only). No
+`admins` / `deposits` / `wins` / `transactionHistory` / `resultHistory` collection. No OTP
+architecture change. No frontend file touched.
+
+## Verification record - 2026-09-07 (Window 6A1)
+
+| Check | Result |
+| --- | --- |
+| `npm.cmd run typecheck` | PASS; strict TypeScript incl. the new admin module, audit service, two scripts, routes and tests |
+| `npm.cmd run lint` | PASS; no warnings |
+| `npm.cmd test` | PASS; 227 tests across 17 files (210 prior + 17 new in `admin-validators.test.ts`) |
+| `npm.cmd run test:integration` | PASS; 202 tests across 10 files (175 prior + 22 new in `admin.integration.ts` + 5 new in `admin-provisioning.integration.ts`) against a disposable MongoDB 8.2.6 replica set |
+| `npm.cmd run build` | PASS; all 10 `/api/admin/players/...` routes registered as dynamic route handlers |
+| `git diff --check` | PASS; no whitespace errors (LF->CRLF advisories only, matching repo convention) |
+| Real HTTP verification | PASS - 32/32 assertions (disposable replica set + real `next dev`) |
+| Configured-DB provisioning | PASS (non-destructive) |
+| Configured-DB demo seed + rerun | PASS (idempotent) |
+| Configured-DB demo login verification | PASS |
+
+New unit coverage (`admin-validators.test.ts`, 17 tests): `createPlayerSchema` normalizes
+loginId, lower-cases email, and rejects a client `role` / `status` / `passwordHash` / empty name
+/ missing password (strict); `listPlayersQuerySchema` default limit 25 / range `[1,100]` /
+status enum / stray-param rejection; `setPlayerStatusSchema` and `resetPlayerPasswordSchema`
+value + stray-field checks; `adminWalletAdjustmentSchema` trims + requires `reason`, rejects a
+non-positive / fractional amount, a non-UUID `clientRequestId`, a client-supplied resulting
+balance and every stray field; query-schema bounds; `buildAdminAdjustmentKey` determinism +
+admin/request scoping + operation-agnosticism; `assertAdminAdjustmentAmount` (100 ok, 99 ->
+`INVALID_AMOUNT`, fractional / unsafe -> `MONEY_OUT_OF_RANGE`); `toAdminWalletTransactionDTO`
+exposes `reason` / `paymentReference` / `actorAdminId` and never `idempotencyKey` / `adminReason`
+/ `userId`; `auditActions` is exactly the seven; `redactAuditSnapshot` redacts secret-bearing
+keys at any depth (incl. inside arrays) and leaves the rest intact.
+
+New integration coverage (`admin.integration.ts` 22 tests + `admin-provisioning.integration.ts`
+5 tests, disposable replica set):
+
+- **create** - user + Rs 0 wallet + `PLAYER_CREATED` atomic; loginId normalized; `createdBy` set;
+  `passwordHash` verifies; audit carries no hash / password; duplicate loginId -> `LOGIN_ID_TAKEN`
+  with no second user / wallet / audit; duplicate phone -> `IDENTIFIER_TAKEN`.
+- **list** - PLAYERs only (fixture admins never listed), newest-first; `(createdAt, _id)` cursor
+  walks 5 rows across 3 pages with no gaps / repeats; `status` + `search` filters; wallet
+  balances + counts joined.
+- **detail** - sanitized, `total = available + reserved`, no `passwordHash`; ADMIN id / bad hex
+  -> `PLAYER_NOT_FOUND`.
+- **disable / enable** - status flip; disable deletes every session (and `findActiveSessionUser`
+  then returns null for the old token) + one `PLAYER_DISABLED`; repeat disable writes no second
+  audit; enable creates no session + one `PLAYER_ENABLED`; repeat writes no second audit;
+  disabling an ADMIN target -> `PLAYER_NOT_FOUND`, admin stays ACTIVE.
+- **reset password** - hash changes, `verifyPassword(new)` true / `verifyPassword(old)` false,
+  every session revoked, `PLAYER_PASSWORD_RESET` audit with no password material; ADMIN target
+  -> `PLAYER_NOT_FOUND`.
+- **ADMIN_CREDIT** - wallet + immutable ledger row (`adminReason` / `adminPaymentReference` /
+  `createdByAdminId` present, exact before/delta/after, `referenceType:"ADMIN_ADJUSTMENT"`) +
+  `ADMIN_WALLET_CREDIT` audit, all one transaction; server computes the balance; below Rs 1 ->
+  `INVALID_AMOUNT` and an ADMIN target -> `PLAYER_NOT_FOUND`, both with no writes.
+- **ADMIN_DEBIT** - debits available, `reserved` untouched, can't go negative
+  (`INSUFFICIENT_BALANCE`), and the earlier `ADMIN_CREDIT` row is byte-identical before and after.
+- **idempotency** - exact replay -> `idempotentReplay`, one movement / ledger / audit, same
+  txId; same `clientRequestId` with a different amount / player / operation (credit<->debit) /
+  reason -> `DUPLICATE_REQUEST` with no second movement.
+- **concurrency** - two concurrent identical credits (same `clientRequestId`) -> one movement,
+  one ledger row, **one** audit row, both callers the same txId, credited once; Rs 100 with two
+  concurrent distinct Rs 80 debits -> one success, one `INSUFFICIENT_BALANCE`, final Rs 20,
+  never negative, one `ADMIN_WALLET_DEBIT` audit; a forced failure right after the wallet
+  movement rolls back everything (no money, no ledger, no audit); a combined `ADMIN_CREDIT` +
+  reserve in one caller-owned transaction leaves consistent balances.
+- **hard delete** - with sessions + OTP + wallet + ledger + bet + revision + withdrawal +
+  identifying audits present, `purgePlayer` leaves **zero** rows for the player in every
+  collection (incl. audits by `subjectUserId` and `entityId`); the old session token no longer
+  resolves; the only surviving audit is `PLAYER_DELETION_COMPLETED` with no `subjectUserId` /
+  `entityId` / snapshot and no loginId / id / phone anywhere in it; the freed loginId is
+  immediately recreatable as a new, differently-`_id`'d player; purging an ADMIN target ->
+  `PLAYER_NOT_FOUND`, admin intact.
+- **provisioning** - `db:provision` first run: all 12 canonical collections present (`stdout`
+  lists each) and `listCollections` returns exactly the 12; second run: `created this run: 0`,
+  still 12, and an operator's customized `markets.enabled` / `platformSettings.payoutMultiplier`
+  survive; markets = 6.
+- **demo seed** - without `DEMO_SEED_ENABLED` the CLI exits non-zero and writes no users; with
+  the flag + passwords: 4 accounts (`test1` PLAYER + `doni` / `pankaj` / `gopal` ADMIN, all
+  `scrypt-v1$` hashes, admins with no wallet), `test1` wallet `available 1_000_000 / reserved 0
+  / INR`, exactly one `ADMIN_CREDIT` with key `ADMIN_CREDIT:DEMO_OPENING_BALANCE:test1:v1`, and
+  stdout never contains a password; rerun: `preserved 4` / `opening credit: already-present`,
+  still 4 users, still one opening credit, balance still `1_000_000`; a pre-existing `doni` as
+  PLAYER makes the CLI exit non-zero with `doni` untouched and no other demo user written.
+- **login verification** - `loginWithPassword` for `test1` (PLAYER portal) and `doni` / `pankaj`
+  / `gopal` (ADMIN portal) all succeed; `test1` via ADMIN portal and `doni` via PLAYER portal
+  both `INVALID_CREDENTIALS`.
+
+Real HTTP verification used a **disposable** `mongodb-memory-server-core` replica set (seeded
+via `seedFoundation()` + one ACTIVE admin + one ACTIVE player) and a real `next dev` on port
+3945 - the user's configured `.env` / database was never used for data; the temporary driver
+lived at the worktree root and was deleted before commit; no cookie / password / hash / secret
+was printed. 32 assertions, all PASS: anonymous `GET` / `POST /api/admin/players` -> `401`;
+player + admin logins issuing `diamond_session` cookies; a PLAYER session -> `403` on every
+admin route; an ADMIN session -> `200`; `POST /api/admin/players` -> `201` with a Rs 0 wallet; a
+mismatched `Origin` on `POST /api/admin/players` -> `403`; `ADMIN_CREDIT` -> `200` with a
+server-computed `available 500000`; an exact `clientRequestId` replay -> `200` `idempotentReplay`;
+a conflicting reuse -> `409 DUPLICATE_REQUEST`; `ADMIN_DEBIT` -> `200`; a debit beyond balance
+-> `422 INSUFFICIENT_BALANCE`; a sub-Rs 1 credit -> `422 INVALID_AMOUNT`;
+`GET .../wallet/transactions` carrying `reason` / `paymentReference` / `actorAdminId` and **no**
+`idempotencyKey`; `GET .../wallet`, `.../bets`, `.../withdrawals`, `.../[id]` -> `200`;
+`status -> DISABLED` -> the player's live session `401`s on `/api/auth/me` and a fresh login ->
+`403`; `status -> ACTIVE`; `reset-password` -> `200` with no hash in the body and login with the
+new password -> `200`; `GET /api/admin/players/<adminId>` -> `404 PLAYER_NOT_FOUND`; `DELETE` ->
+`200`, then detail -> `404`, then the deleted credential -> `401`, then the freed loginId
+recreatable as a new player. The dev server, the disposable database and the temporary driver
+were stopped and removed afterward.
+
+Configured deployment database (authorized by the brief; NON-DESTRUCTIVE scripts only; the
+`.env` was copied byte-for-byte from the frontend worktree for this run and then restored, is
+gitignored and was never staged; no URI, credential or hash was printed):
+
+- `npm run db:provision` -> PASS. Database name `test` (the configured SRV URI carries no
+  explicit database path, so Mongoose uses the default `test`). All 12 canonical collections
+  present afterward (2 created this run, the other 10 pre-existing); zero non-canonical
+  collections. Index counts: users 4, sessions 4, otpRequests 3, wallets 2, walletTransactions
+  4, markets 3, marketRounds 4, bets 6, betRevisions 4, withdrawals 4, auditLogs 4,
+  platformSettings 2. `platformSettings` singleton present; markets = 6.
+- `npm run db:seed-demo` -> PASS (`created 4`, `opening credit: applied`), rerun -> PASS
+  (`preserved 4`, `opening credit: already-present`).
+- Post-seed read-only inspection: `test1` PLAYER / ACTIVE / hashed; `doni` / `pankaj` / `gopal`
+  ADMIN / ACTIVE / hashed; admins have no wallet; `test1` wallet `available 1_000_000 /
+  reserved 0 / INR`; exactly one `ADMIN_CREDIT` for `test1` with key
+  `ADMIN_CREDIT:DEMO_OPENING_BALANCE:test1:v1` (one `ADMIN_CREDIT` total - the rerun added none).
+- Login verification against the configured database (auth-service check): `test1` authenticates
+  on the PLAYER portal; `doni` / `pankaj` / `gopal` authenticate on the ADMIN portal; `test1`
+  via the ADMIN portal and `doni` via the PLAYER portal are both rejected `INVALID_CREDENTIALS`;
+  a wrong password is rejected.
+
+No secret value (URI, `SESSION_SECRET`, DB credential, password, password hash, raw session
+cookie, raw OTP) was printed or committed at any point. All scratch drivers / inspection
+scripts were deleted before commit.

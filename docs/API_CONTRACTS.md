@@ -462,3 +462,86 @@ consistent with Windows 4A1-4A4:
   `{ data: { withdrawal, wallet, serverNow } }` (not `201`), matching every other route here;
 - `[id]` is the Mongo `_id` handle - withdrawals have no human public reference - and knowing an
   id never grants access (`404 WITHDRAWAL_NOT_FOUND` for a non-owned withdrawal).
+
+## Window 6A1 - implemented admin player & wallet contract
+
+Ten route files under `src/app/api/admin/players/`. All `apiRoute`-wrapped with the shared
+`{data:...}` / `{error:{code,message}}` shape; all require an **ADMIN** session via
+`requireAdmin()` (anonymous -> `401 UNAUTHENTICATED`; **PLAYER** -> `403 FORBIDDEN`); all
+`export const dynamic = "force-dynamic"`. Every mutation (`POST` / `DELETE`) also requires a
+trusted `Origin` (`403` on mismatch); the `GET`s are exempt (matching the player routes).
+Every response carries `serverNow` (ISO-8601). The acting admin is always the authenticated
+session - **no admin id or role is accepted from the client**. A missing / malformed / ADMIN
+`[id]` is an indistinguishable `404 PLAYER_NOT_FOUND` on every route (admin accounts are
+invisible to player management).
+
+Route shape follows the codebase (all mutations are `POST`, not `PATCH`; the sketch's single
+`wallet-adjustment` is split into explicit `wallet/credit` + `wallet/debit` mirroring the
+`ADMIN_CREDIT` / `ADMIN_DEBIT` ledger types; dedicated read sub-routes replace one composite
+payload).
+
+| Route | Request | `200`/`201` `data` | Notable errors |
+| --- | --- | --- | --- |
+| `POST /api/admin/players` | `.strict()` `{ loginId, name, password, phone?, email? }` — **no `role`** (server-forced PLAYER) | `201` `{ player: AdminPlayerDetail, serverNow }` | `401`, `403` (also cross-origin, PLAYER), `INVALID_INPUT` (400 - bad shape / stray field incl. `role`, `status`, `passwordHash`), `LOGIN_ID_TAKEN` (409), `IDENTIFIER_TAKEN` (409 - phone/email) |
+| `GET /api/admin/players` | `?search=` (normalized loginId / email substring, exact phone), `?status=ACTIVE\|DISABLED`, `?limit=` 1-100 (default 25), `?cursor=` opaque (`.strict()`) | `{ players: AdminPlayerListItem[], nextCursor: string\|null, serverNow }` | `401`, `403`, `INVALID_INPUT` (400 - bad limit / stray param / malformed cursor) |
+| `GET /api/admin/players/[id]` | `[id]` = 24-hex user id | `{ player: AdminPlayerDetail, serverNow }` | `401`, `403`, `PLAYER_NOT_FOUND` (404) |
+| `DELETE /api/admin/players/[id]` | none | `{ purged: true, serverNow }` | `401`, `403` (also cross-origin), `PLAYER_NOT_FOUND` (404 - incl. an ADMIN target) |
+| `POST /api/admin/players/[id]/status` | `.strict()` `{ status: "ACTIVE" \| "DISABLED" }` | `{ player: AdminPlayerDetail, serverNow }` | `401`, `403` (also cross-origin), `PLAYER_NOT_FOUND` (404) |
+| `POST /api/admin/players/[id]/reset-password` | `.strict()` `{ newPassword }` | `{ reset: true, serverNow }` | `401`, `403` (also cross-origin), `PLAYER_NOT_FOUND` (404) |
+| `GET /api/admin/players/[id]/wallet` | none | `{ wallet: WalletView, serverNow }` | `401`, `403`, `PLAYER_NOT_FOUND` (404) |
+| `GET /api/admin/players/[id]/wallet/transactions` | `?limit=` 1-100 (default 20), `?cursor=` opaque (`.strict()`) | `{ transactions: AdminWalletTransactionDTO[], nextCursor, serverNow }` | `401`, `403`, `INVALID_INPUT` (400), `PLAYER_NOT_FOUND` (404) |
+| `POST /api/admin/players/[id]/wallet/credit` | `.strict()` `{ amountPaise: int>0, reason, paymentReference?, clientRequestId: uuid }` | `{ transaction: { id, type:"ADMIN_CREDIT", amountPaise }, wallet: WalletView, idempotentReplay: bool, serverNow }` | `401`, `403` (also cross-origin), `INVALID_INPUT` (400 - bad shape / empty reason / non-uuid / stray incl. a resulting balance), `INVALID_AMOUNT` (422 - below Rs 1), `MONEY_OUT_OF_RANGE` (422), `DUPLICATE_REQUEST` (409), `PLAYER_NOT_FOUND` (404) |
+| `POST /api/admin/players/[id]/wallet/debit` | same as credit | `{ transaction: { id, type:"ADMIN_DEBIT", amountPaise }, wallet: WalletView, idempotentReplay, serverNow }` | as credit, plus `INSUFFICIENT_BALANCE` (422 - would push available below zero) |
+| `GET /api/admin/players/[id]/bets` | `?limit=` 1-50 (default 20), `?cursor=`, `?status=ACTIVE\|WON\|LOST`, `?market=<slug>` (`.strict()`) | `{ bets: PlayerBetDTO[], nextCursor, serverNow }` (reuses the sanitized player bet DTO) | `401`, `403`, `INVALID_INPUT` (400), `PLAYER_NOT_FOUND` (404), `MARKET_NOT_FOUND` (404 - unknown `?market`) |
+| `GET /api/admin/players/[id]/withdrawals` | `?limit=` 1-50 (default 20), `?cursor=`, `?status=PENDING\|APPROVED\|REJECTED\|CANCELLED` (`.strict()`) | `{ withdrawals: WithdrawalDTO[], nextCursor, serverNow }` (reuses the sanitized player DTO - masked `destination.summary` only) | `401`, `403`, `INVALID_INPUT` (400), `PLAYER_NOT_FOUND` (404) |
+
+`AdminPlayerSummary` = `{ id, loginId, name, phone: string\|null, email: string\|null,
+status: "ACTIVE"\|"DISABLED", createdAt: iso, updatedAt: iso }`. **Never serialized:**
+`passwordHash`, `createdBy`, `passwordChangedAt`, session / OTP material, `__v`.
+
+`AdminPlayerListItem` = `AdminPlayerSummary` + `{ availableBalancePaise, reservedBalancePaise,
+totalBalancePaise, betCount, withdrawalCount }` (wallet + counts batch-loaded via three `$in`
+reads — no per-row query).
+
+`AdminPlayerDetail` = `AdminPlayerSummary` + `{ wallet: WalletView }` where `WalletView =
+{ currency, availableBalancePaise, reservedBalancePaise, totalBalancePaise }`.
+
+`AdminWalletTransactionDTO` = `{ id, type, amountPaise, availableDeltaPaise, reservedDeltaPaise,
+availableBeforePaise, availableAfterPaise, reservedBeforePaise, reservedAfterPaise,
+referenceType: string\|null, reason: string\|null, paymentReference: string\|null,
+actorAdminId: string\|null, createdAt: iso }`. Exposes the admin operational metadata a future
+screen needs but **never** the internal `idempotencyKey`.
+
+**LOCKED V1 manual deposit flow.** There is **no payment gateway** in V1. A player pays the
+admin outside Diamond (UPI / cash / bank); the admin verifies it; the admin calls
+`wallet/credit`; the system records an immutable `ADMIN_CREDIT`. `wallet/debit` (`ADMIN_DEBIT`)
+is the correction mirror — it never pushes available below zero and never touches reserved. The
+resulting balance is always computed by the server (`applyWalletMovement`), never accepted from
+the request.
+
+**Financial atomicity.** Credit / debit run the wallet balance change + the immutable
+`walletTransactions` row + a redacted `auditLogs` row (`ADMIN_WALLET_CREDIT` /
+`ADMIN_WALLET_DEBIT`) in **one MongoDB transaction** — any failure moves no money and writes no
+partial state.
+
+**Idempotency.** `clientRequestId` (client UUID) → key
+`ADMIN_WALLET_ADJUSTMENT:<adminId>:<clientRequestId>`, backed by the unique
+`walletTransactions {idempotencyKey}` index. Operation-agnostic: an exact replay returns the
+original receipt (`idempotentReplay: true`, no second movement / ledger / audit); the same id
+with a different player, operation (credit↔debit), amount, reason or payment reference is
+`409 DUPLICATE_REQUEST`. Two simultaneous identical credits resolve to one movement / one
+ledger row / one audit row.
+
+**Session invalidation.** `status → DISABLED`, password reset and hard purge each revoke every
+one of the player's sessions **inside the same transaction**; `findActiveSessionUser` also
+rejects any surviving cookie because the user is no longer ACTIVE (or no longer exists).
+
+**Hard purge (`DELETE`).** Runs `playerDeletionService.purgePlayer()` — one transaction removing
+`betRevisions`, `bets`, `withdrawals`, `walletTransactions`, `wallets`, `sessions`,
+`otpRequests`, every identifying `auditLogs` row, then the `user`. The only survivor is a
+generic `PLAYER_DELETION_COMPLETED` audit row with no player identifier. No tombstone, no
+deny-list — the freed `loginId` may later back a brand-new account.
+
+**Not in 6A1** (Window 6A2 / later): admin withdrawal approve/reject routes, market config
+mutations, result declaration, game-rate API, a full admin audit browser, settlement. The
+Window 5A internal withdrawal decision primitives are unchanged and unrouted.

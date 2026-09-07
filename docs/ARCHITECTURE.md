@@ -925,3 +925,154 @@ already existed and are reused verbatim - no synonymous codes.
 `export const dynamic = "force-dynamic"`; an ADMIN session is `403 FORBIDDEN`, anonymous
 `401 UNAUTHENTICATED`; no `userId` is accepted from the client. A non-owned or missing
 withdrawal is an indistinguishable `404 WITHDRAWAL_NOT_FOUND` on detail and cancel.
+
+## Window 6A1: admin player management, manual wallet movement, DB provisioning & demo seed
+
+Backend / financial domain only — **no admin UI**. Adds the first `/api/admin/*` surface, the
+first `auditLogs` writer, and two operational CLIs. See DOMAIN_RULES.md's "Window 6A1
+implementation clarification" for the frozen-rule mapping, API_CONTRACTS.md's "Window 6A1 -
+implemented admin player & wallet contract" for exact shapes, and DATABASE.md's Window 6A1
+section for the one additive schema field.
+
+### Module layout
+
+```
+src/modules/admin/
+  validators/admin-player-input.ts   strict Zod for every admin route
+  services/
+    admin-player.service.ts          create / list / detail / disable / enable /
+                                     reset-password / wallet view / linked bet & withdrawal reads
+    admin-wallet.service.ts          adminCreditWallet / adminDebitWallet / admin ledger read
+    player-deletion.service.ts       playerDeletionService.purgePlayer() (implements the
+                                     Window 6 PlayerDeletionService contract) + purgePlayerById
+src/modules/audit/services/
+  audit-log.service.ts               writeAuditLog(...) — the single auditLogs writer + redaction
+src/app/api/admin/players/           10 route files (thin handlers)
+scripts/provision-db.ts              npm run db:provision
+scripts/seed-demo.ts                 npm run db:seed-demo
+```
+
+### Layering
+
+Handlers stay thin: `requireAdmin()` → (mutations) `isTrustedOrigin` → strict Zod → service →
+sanitized `{ data }`. Services own all business logic, transactions and authorization nuance.
+The wallet is touched ONLY through the Window 4A2 core (`applyWalletMovement` and the named
+wrappers) — no admin code writes a balance directly (CODEX_RULES #10). `auditLogs` is written
+ONLY through `writeAuditLog`.
+
+### `resolvePlayer` — the admin authorization primitive
+
+Every player-targeting service call goes through `resolvePlayer(playerId, session?)`: 24-hex
+check → `User.findOne({ _id, role: "PLAYER" })`. A missing id, a malformed id and an **ADMIN**
+id are all an indistinguishable `PLAYER_NOT_FOUND` (404), so admin accounts cannot be
+enumerated or mutated through player management (brief §29). `passwordHash` is `select:false`
+and never loaded anywhere in the module.
+
+### Admin player lifecycle
+
+- **create** — one transaction: `User.create` (role server-forced PLAYER, `createdBy` = admin) →
+  `createPlayerWallet` (₹0) → `writeAuditLog(PLAYER_CREATED)`. Pre-checks give clean
+  `LOGIN_ID_TAKEN` / `IDENTIFIER_TAKEN`; the unique `users` indexes are the race backstop
+  (E11000 re-mapped to the same codes).
+- **list** — `role: "PLAYER"`, newest-first `(createdAt, _id)` cursor, `search` on normalized
+  `loginId` / `email` (case-insensitive substring) + exact `phone`. Wallet balances and
+  bet / withdrawal counts are batch-loaded (one `$in` wallet read + two `$group` aggregates) —
+  never one query per row.
+- **disable / enable** — CAS `updateOne` on `{ role:"PLAYER", status:<from> }` inside a
+  transaction; disable also `revokeAllUserSessions(userId, session)`. Audit only on a real
+  transition (idempotent repeat writes nothing). Enable never recreates sessions.
+- **reset-password** — `hashPassword` → `updateOne` `passwordHash` + `passwordChangedAt` →
+  `revokeAllUserSessions` → `writeAuditLog(PLAYER_PASSWORD_RESET)` (no password material), one
+  transaction. Never returns the hash. Not a player self-service flow.
+- **linked reads** — `listPlayerBetsForAdmin` / `listPlayerWithdrawalsForAdmin` reuse the exact
+  player-facing `listPlayerBets` / `listPlayerWithdrawals` (already-sanitized DTOs) after
+  `resolvePlayer`. Admin inspects bets / revisions only — there is no admin bet or ledger edit
+  path anywhere (brief §23).
+
+### Manual wallet movement (`admin-wallet.service.ts`)
+
+`adminCreditWallet` / `adminDebitWallet` share one `adjust(type, input, options)` core:
+
+1. `resolvePlayer` (PLAYER only), `assertAdminAdjustmentAmount` (≥ ₹1, safe integer), require a
+   non-empty `reason`.
+2. `createPlayerWallet` (₹0 ensure), build key
+   `ADMIN_WALLET_ADJUSTMENT:<adminId>:<clientRequestId>` — **operation-agnostic** so a
+   credit↔debit reuse of a request id collides in the wallet core's `assertSameOperation`.
+3. existing-success recovery FIRST (`getTransactionByIdempotencyKey`): an exact match replays
+   the original receipt; a mismatch on type / amount / player / `adminReason` /
+   `adminPaymentReference` is `DUPLICATE_REQUEST`.
+4. one `withTransaction`: `applyWalletMovement` (writes the immutable `ADMIN_CREDIT` /
+   `ADMIN_DEBIT` ledger row carrying `adminReason` + `adminPaymentReference` +
+   `createdByAdminId`) → `writeAuditLog(ADMIN_WALLET_CREDIT / ADMIN_WALLET_DEBIT)` — **skipped
+   on the in-transaction idempotent-replay path** so a write-conflict retry never double-audits
+   a single adjustment.
+5. a lost race collides on the unique `idempotencyKey` index inside the aborted transaction and
+   is recovered outside it.
+
+`ADMIN_DEBIT` uses the wallet core's `availableBalancePaise >= amount` guard, so available never
+goes negative (`INSUFFICIENT_BALANCE`) and `reservedBalancePaise` is never read or written. The
+resulting balance always comes from `applyWalletMovement`, never the request. An
+`afterWalletMovement` test seam forces a post-movement / pre-commit rollback.
+
+`listPlayerWalletTransactionsForAdmin` returns `AdminWalletTransactionDTO` — the player ledger
+fields plus `reason` / `paymentReference` / `actorAdminId`, but never the `idempotencyKey`.
+
+### Hard purge (`player-deletion.service.ts`)
+
+`playerDeletionService.purgePlayer({ actorAdminId, playerId })` — the single deletion boundary
+(ADMIN_SPEC.md). One `withTransaction`: collect the player's `bet` ids → delete `betRevisions`
+(by `userId` or `betId`), `bets`, `withdrawals`, `walletTransactions`, `wallets`, `sessions`,
+`otpRequests`, every `auditLogs` row with `subjectUserId` **or** `entityId` = the player, then
+CAS-delete the `user` on `{ role: "PLAYER" }`. Finally `writeAuditLog(PLAYER_DELETION_COMPLETED)`
+with `entityType: "Player"` and **no** `entityId` / `subjectUserId` / snapshot. ADMIN targets
+are `PLAYER_NOT_FOUND`. No tombstone, no deny-list — the freed `loginId` is immediately
+reusable for a new account.
+
+### Audit (`audit-log.service.ts`)
+
+`writeAuditLog(input, session?)` is the only `auditLogs` writer. It deep-copies `before` /
+`after` replacing any `password` / `passwordHash` / `newPassword` / `token` / `codeHash` /
+`secret`-style key (case-insensitive, any depth) with `[REDACTED]`, and requires `subjectUserId`
+on every player-associated row so `purgePlayer` can find it. Actions:
+`PLAYER_CREATED` · `PLAYER_DISABLED` · `PLAYER_ENABLED` · `PLAYER_PASSWORD_RESET` ·
+`PLAYER_DELETION_COMPLETED` · `ADMIN_WALLET_CREDIT` · `ADMIN_WALLET_DEBIT`.
+
+### Errors
+
+Added `PLAYER_NOT_FOUND` (404), `LOGIN_ID_TAKEN` (409), `IDENTIFIER_TAKEN` (409) to
+`lib/errors/domain-error.ts`. `INVALID_AMOUNT` (422), `INSUFFICIENT_BALANCE` (422),
+`MONEY_OUT_OF_RANGE` (422), `DUPLICATE_REQUEST` (409), `INVALID_INPUT` (400), `FORBIDDEN` (403),
+`UNAUTHENTICATED` (401) are reused verbatim — no synonymous codes.
+
+### Reuse of the wallet core
+
+`WalletMovementInput` / `NamedMovementInput` gained optional `adminReason` /
+`adminPaymentReference`; `applyWalletMovement` persists them on the ledger row and
+`assertSameOperation` compares them (a replayed key with a materially different reason /
+reference is `DUPLICATE_REQUEST`). `revokeAllUserSessions` gained an optional `session` param so
+disable / reset / purge revoke sessions inside their transaction. Nothing else in the wallet or
+auth core changed.
+
+### Operational CLIs
+
+- **`scripts/provision-db.ts`** (`db:provision`) — connect → `createCollection` for any missing
+  canonical collection (swallow `NamespaceExists`) → `ensureIndexes()` (additive `createIndexes`,
+  never `syncIndexes`) → `seedFoundation()` (`$setOnInsert` upserts). Non-destructive,
+  idempotent, cross-checks the model registry against the frozen 12-name list, prints names /
+  index counts only.
+- **`scripts/seed-demo.ts`** (`db:seed-demo`) — guarded by `DEMO_SEED_ENABLED=true`
+  (`getDemoSeedEnv`); passwords come from the environment, never source. Pre-flight role-conflict
+  scan aborts with no writes. Creates `test1` (PLAYER) + `doni` / `pankaj` / `gopal` (ADMIN),
+  hashed. The demo player's ₹10,000 opening balance is a keyed `ADMIN_CREDIT` through
+  `applyWalletMovement` (key `ADMIN_CREDIT:DEMO_OPENING_BALANCE:test1:v1`), never a direct write.
+  Deterministic and idempotent — a rerun preserves accounts and never re-credits.
+
+### Routes
+
+10 files under `src/app/api/admin/players/`, all `apiRoute` + `export const dynamic =
+"force-dynamic"` + `requireAdmin()`; every mutation also `isTrustedOrigin` (`403` on mismatch).
+`GET|POST /players`, `GET|DELETE /players/[id]`, `POST /players/[id]/status`,
+`POST /players/[id]/reset-password`, `GET /players/[id]/wallet`,
+`GET /players/[id]/wallet/transactions`, `POST /players/[id]/wallet/credit`,
+`POST /players/[id]/wallet/debit`, `GET /players/[id]/bets`, `GET /players/[id]/withdrawals`.
+Anonymous → `401`, PLAYER → `403`. No admin id / role is read from the request.

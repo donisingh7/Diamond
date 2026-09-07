@@ -1099,6 +1099,54 @@ actorAdminId
 
 may remain only if it contains no deleted player identifier/name/login/phone/entity reference capable of linking back to them.
 
+### Window 6A1 implementation clarification (no business rule changed)
+
+The frozen rules above (₹0 wallet on player creation with any opening balance as a separate
+audited movement; complete hard-delete purge with no tombstone / deny-list; redacted admin audit
+on every meaningful action; the ten wallet transaction types; no negative balances; reserved is
+never spendable; every movement ledgered; no independent ledger / bet editing) are implemented,
+not altered.
+
+- **LOCKED V1 money-in flow — manual, no gateway.** There is no payment gateway, no Razorpay, no
+  UPI collect, no async settlement in V1. A player pays the admin **outside Diamond**
+  (UPI / cash / bank), the admin verifies that payment, then credits the Diamond wallet through
+  `POST /api/admin/players/[id]/wallet/credit`, and the system records an immutable `ADMIN_CREDIT`
+  (`available += amount`). `paymentReference` (a UTR / txn id) and a required `reason` are stored
+  on the ledger row and the audit row. Mock Deposit (`MOCK_DEPOSIT`) remains a separate
+  prototype-only player convenience and is unrelated to this operational flow.
+- **`ADMIN_DEBIT` is the correction mirror.** Manual reversal of an accidental credit or a
+  controlled adjustment: `available -= amount`, never below zero (`INSUFFICIENT_BALANCE`),
+  `reserved` untouched. The earlier ledger row is never edited or deleted — a correction is a new
+  compensating `ADMIN_DEBIT` row with its own reason.
+- **Money-out is unchanged and stays Window 5A / 6A2.** Withdrawal request still moves
+  `available → reserved` immediately (PENDING). 6A1 exposes NO admin approve / reject route; the
+  Window 5A internal `approveWithdrawalByAdmin` / `rejectWithdrawalByAdmin` primitives are
+  untouched and Window 6A2 will route them under "Mark Paid & Approve" (approval finalizes
+  RESERVED only — never a second debit of available).
+- **Admin wallet movement is atomic and idempotent.** wallet balance change + immutable
+  `walletTransactions` row + redacted `auditLogs` row are one MongoDB transaction — any failure
+  moves no money. The resulting balance is computed by the wallet core, never accepted from the
+  client. Idempotency key `ADMIN_WALLET_ADJUSTMENT:<adminId>:<clientRequestId>` is
+  operation-agnostic: an exact replay returns the original receipt; the same request id with a
+  different player / operation / amount / reason / reference is `DUPLICATE_REQUEST` (backed by the
+  unique `idempotencyKey` index, not an in-memory check).
+- **Admin player lifecycle.** Create forces `role: PLAYER` (no public signup, no admin creation
+  via API) + a ₹0 wallet + `PLAYER_CREATED`, all atomic. Disable (`ACTIVE → DISABLED`) revokes
+  every session in the same transaction and blocks future login; enable (`DISABLED → ACTIVE`)
+  does not recreate sessions. Admin password reset hashes the new value, revokes every session,
+  never returns the hash, and is not a player self-service flow. All are idempotent and only ever
+  act on a PLAYER — an ADMIN target is an indistinguishable `PLAYER_NOT_FOUND`.
+- **Hard purge** runs through the single `playerDeletionService.purgePlayer()` boundary in one
+  transaction: `betRevisions`, `bets`, `withdrawals`, `walletTransactions`, `wallets`,
+  `sessions`, `otpRequests`, every `auditLogs` row whose `subjectUserId` / `entityId` is the
+  player, then the `user`. The surviving `PLAYER_DELETION_COMPLETED` row carries only
+  `actorAdminId` + `action` + timestamp. ADMIN accounts are never purgeable here. The freed
+  `loginId` may later back an entirely new, unrelated account.
+- **No admin bet / ledger editing.** Admin may read bets, revisions and the ledger; there is no
+  route or service to edit a `Bet`, delete a `Bet` / `BetRevision`, or mutate a
+  `walletTransactions` row. Player deletion remains the only path that removes financial history,
+  and only as part of removing the whole player.
+
 ## USER-FACING BET REFERENCE
 
 Never expose Mongo ObjectId as the primary user-facing ticket/bet number.

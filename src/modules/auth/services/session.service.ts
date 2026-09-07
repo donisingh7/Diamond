@@ -51,7 +51,13 @@ export async function revokeSessionByToken(rawToken: string): Promise<void> {
   await Session.deleteOne({ tokenHash: hashSessionToken(rawToken) });
 }
 
-/** Reusable primitive for future password reset/change and admin disable/delete flows. */
-export async function revokeAllUserSessions(userId: Types.ObjectId): Promise<void> {
-  await Session.deleteMany({ userId });
+/**
+ * Reusable primitive for password reset, admin disable and admin hard-delete. Pass a
+ * `ClientSession` to revoke inside the caller's transaction (admin reset/disable/purge do this
+ * so the status change and the session wipe commit or roll back together). Even without it,
+ * `findActiveSessionUser` re-checks user status on every request and revokes a stale cookie on
+ * sight, so a disabled/deleted user is locked out regardless.
+ */
+export async function revokeAllUserSessions(userId: Types.ObjectId, session?: ClientSession): Promise<void> {
+  await Session.deleteMany({ userId }, session ? { session } : {});
 }
