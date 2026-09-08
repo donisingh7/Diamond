@@ -29,7 +29,7 @@ export function BetDetail({ reference }: { reference: string }) {
     <h1 id="bet-detail-heading" ref={heading} tabIndex={-1} className="type-page-title">Bet detail</h1>
     {editing ? <BetEdit bet={editing} eligible={!!remote?.canEditNow && remote.version === editing.version && !api.error} onCancel={() => { setEditing(undefined); void api.refresh(); focusDetails(); }} onSaved={updated => { setSaved(updated); setEditing(undefined); void api.refresh(); void wallet.refresh(); focusDetails(); }} /> : !bet ? api.loading ? <CardSkeleton /> : <ErrorState title="Could not load this bet" description={api.error} action={<Button onClick={() => void api.refresh()}>Try again</Button>} /> : <>
       {api.error && <Alert tone="warning" title="Could not refresh this bet">{api.error}<Button variant="ghost" onClick={() => void api.refresh()}>Try again</Button></Alert>}
-      {saved && <Alert tone="success" title={`Changes saved · Version ${saved.version}`}>{saved.publicRef}{savedRevision && <p><WalletDelta paise={savedRevision.walletDeltaPaise} /> · Confirmed by server</p>}</Alert>}
+      {saved && <Alert tone="success" title={`Changes saved · Version ${saved.version}`}>{saved.publicRef}{savedRevision && <p><WalletDelta paise={savedRevision.walletDeltaPaise} /> · Wallet adjustment confirmed</p>}</Alert>}
       <div className="bet-detail-layout"><GlassPanel className="stack">
         <div className="between"><p className="bet-reference">{bet.publicRef}</p><BetStatus status={bet.status} /></div>
         <div><h2 className="type-section-title">{bet.market.name}</h2><p className="type-body-small text-secondary">{businessDateLabel(bet.businessDate)} · Jodi game · {methodLabel(bet)}</p></div>

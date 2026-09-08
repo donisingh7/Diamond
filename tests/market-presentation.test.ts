@@ -10,7 +10,7 @@ const market: MarketDTO = {
 
 describe("player timing presentation", () => {
   it("displays the persisted next-day close in IST, independently of browser timezone", () => {
-    expect(marketDateTime(market.round!.closesAt, market.timezone)).toMatch(/7 Sept?,? 03:00 am/i);
+    expect(marketDateTime(market.round!.closesAt, market.timezone)).toMatch(/7 Sept? 2026,? 03:00 am/i);
     expect(marketTime(market.round!.opensAt, market.timezone)).toMatch(/07:00 am/i);
     expect(businessDateLabel(market.round!.businessDate)).toMatch(/6 Sept? 2026/);
   });

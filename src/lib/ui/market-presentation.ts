@@ -21,7 +21,7 @@ export function businessDateLabel(date: string) {
 }
 
 export function marketDateTime(instant: string, timezone: string) {
-  return new Intl.DateTimeFormat("en-IN", { timeZone: timezone, day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: true }).format(new Date(instant));
+  return new Intl.DateTimeFormat("en-IN", { timeZone: timezone, day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: true }).format(new Date(instant));
 }
 
 export function countdownTarget(market: MarketDTO) {
