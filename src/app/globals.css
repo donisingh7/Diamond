@@ -1,5 +1,50 @@
 @import "tailwindcss";
 
+/* Operational admin screens share Diamond's Light/Dark materials. */
+.admin-operations,.admin-operations > * { min-width: 0; }
+.admin-operations { overflow-wrap: anywhere; }
+.admin-records { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 20px; list-style: none; padding: 0; margin: 0; }
+.admin-records > li { min-width: 0; }
+.admin-records > li > .glass { height: 100%; }
+.admin-form-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 20px; }
+.admin-form-grid > * { min-width: 0; }
+.admin-form-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.admin-form-fields:disabled { opacity: .65; }
+.admin-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 16px; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-elevated); }
+.admin-filters > .field { flex: 1 1 180px; min-width: 0; }
+.admin-select select { width: 100%; min-width: 0; min-height: 48px; padding: 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--input); color: var(--text-primary); font-size: .875rem; }
+.admin-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 20px; }
+.admin-metric { display: flex; flex-direction: column; gap: 14px; }
+.admin-metric > strong { font: 500 clamp(2rem,4vw,3rem)/1.1 var(--font-geist-mono),monospace; }
+.admin-metric--priority { border-top: 3px solid var(--gaming-gold); background: linear-gradient(130deg,var(--ticket-light),transparent),var(--surface); }
+.admin-metric > .text-link { margin-top: auto; }
+.admin-disclosure { min-width: 0; }
+.admin-disclosure > summary { min-height: 48px; padding: 12px 0; cursor: pointer; color: var(--accent); font-size: .875rem; }
+.admin-disclosure > .glass,.admin-disclosure > form { margin-top: 16px; }
+.admin-reference { font-family: var(--font-geist-mono),monospace; overflow-wrap: anywhere; }
+.admin-snapshot { display: grid; gap: 12px; font-size: .8125rem; }
+.admin-snapshot dt { color: var(--text-secondary); }
+.admin-snapshot dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.admin-snapshot pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .75rem; }
+.admin-check { display: flex; gap: 12px; align-items: start; min-height: 48px; font-size: .875rem; }
+.admin-check input { width: 20px; height: 20px; flex-shrink: 0; accent-color: var(--accent); }
+.admin-preserve-lines { white-space: pre-line; overflow-wrap: anywhere; }
+.admin-confirm { max-height: calc(100dvh - 32px); overflow-y: auto; overflow-wrap: anywhere; }
+.admin-narrow { width: 100%; max-width: 720px; }
+.admin-result-number { color: var(--result); font: 600 3rem var(--font-geist-mono),monospace; }
+.admin-operations .money { white-space: normal; overflow-wrap: anywhere; }
+.admin-operations .bet-receipt-selections { max-height: 400px; overflow-y: auto; }
+@media (max-width: 1200px) { .admin-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 767px) {
+  .admin-records,.admin-form-grid { grid-template-columns: minmax(0,1fr); }
+  .admin-operations .glass-panel { padding: 24px 18px; }
+  .admin-filters { padding: 16px; }
+  .admin-topbar { flex-wrap: wrap; gap: 12px; }
+  .admin-topbar .topbar-slots { flex-wrap: wrap; max-width: 100%; }
+  .admin-operations .bet-facts > div { flex-wrap: wrap; }
+}
+@media (max-width: 420px) { .admin-metrics { grid-template-columns: minmax(0,1fr); } }
+
 /* Player wallet: prominent available funds, compact immutable records. */
 .wallet-page { min-width: 0; }
 .wallet-overview-layout { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); gap: 24px; align-items: start; }
