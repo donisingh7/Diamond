@@ -3,7 +3,8 @@ import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { hashOtpCode, MockOtpProvider } from "@/modules/auth/providers/otp-provider";
 import { assertDevelopmentReset } from "../scripts/reset-safeguards";
 import { DomainError, toPublicError } from "@/lib/errors/domain-error";
-import { getDatabaseEnv } from "@/lib/config/env";
+import { getDatabaseEnv, getSessionSecret } from "@/lib/config/env";
+import { SetupError } from "@/lib/errors/setup-error";
 
 describe("security foundations", () => {
   it("accepts only explicit valid DNS override addresses", () => {
@@ -32,6 +33,24 @@ describe("security foundations", () => {
       const sink = vi.fn(async () => {});
       await new MockOtpProvider(sink).send({ userId: "u", requestId: "a", code: "123456" });
       expect(sink).toHaveBeenCalledOnce();
+    } finally { vi.unstubAllEnvs(); }
+  });
+  it("fails closed on a missing or too-short SESSION_SECRET with static setup guidance, not the value", () => {
+    try {
+      vi.stubEnv("SESSION_SECRET", "");
+      expect(() => getSessionSecret()).toThrow(SetupError);
+      vi.stubEnv("SESSION_SECRET", "too-short");
+      const shortSecret = "too-short";
+      try {
+        getSessionSecret();
+        expect.unreachable("getSessionSecret must throw for a short secret");
+      } catch (error) {
+        expect(error).toBeInstanceOf(SetupError);
+        expect((error as SetupError).message).not.toContain(shortSecret);
+        expect((error as SetupError).message).toContain("at least 32 characters");
+      }
+      vi.stubEnv("SESSION_SECRET", "test-only-secret-with-at-least-32-characters");
+      expect(getSessionSecret()).toBe("test-only-secret-with-at-least-32-characters");
     } finally { vi.unstubAllEnvs(); }
   });
   it("refuses resets without all three independent safeguards", () => {

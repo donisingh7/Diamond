@@ -1,6 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { isIP } from "node:net";
+import { SetupError } from "../errors/setup-error";
 
 export function getDatabaseEnv() {
   return z.object({
@@ -12,8 +13,18 @@ export function getDatabaseEnv() {
   }).parse(process.env);
 }
 
+/**
+ * The HMAC pepper for session and OTP hashing. A missing or too-short `SESSION_SECRET` is a
+ * deployment misconfiguration, not user input — surface static operational guidance (never the
+ * value) instead of a raw ZodError, while still failing closed: this throws, so no session or
+ * OTP hash is ever produced without a valid secret.
+ */
 export function getSessionSecret(): string {
-  return z.string().min(32).parse(process.env.SESSION_SECRET);
+  const parsed = z.string().min(32).safeParse(process.env.SESSION_SECRET);
+  if (!parsed.success) {
+    throw new SetupError("SESSION_SECRET must be set to a string of at least 32 characters.");
+  }
+  return parsed.data;
 }
 
 export function getSeedAdminEnv() {
