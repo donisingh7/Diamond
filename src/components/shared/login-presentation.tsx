@@ -163,9 +163,9 @@ export function LoginPresentation({ admin = false }: { admin?: boolean }) {
               <>
                 <div>
                   <h2 className="type-page-title">Enter your code</h2>
-                  <p className="text-secondary type-body-small">We sent a 6-digit code to your registered phone.</p>
+                  <p className="text-secondary type-body-small">Enter the 6-digit code for your registered phone.</p>
                 </div>
-                {devCode && <p className="preview-notice">Development preview · mock code {devCode}</p>}
+                {devCode && <p className="preview-notice">Test sign-in code · {devCode}</p>}
                 {error && <Alert title="Verification failed" tone="danger">{error}</Alert>}
                 <form className="stack" onSubmit={submitOtp}>
                   <Input label="6-digit code" autoComplete="one-time-code" inputMode="numeric" placeholder="000000" value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))} required />

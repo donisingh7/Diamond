@@ -49,7 +49,7 @@ export function BetBuilder({ marketSlug, marketName, timezone, initialEntry, ini
   if (transaction.draft) return <BetReview transaction={{ ...transaction, edit: () => { transaction.edit(); requestAnimationFrame(() => document.getElementById(`${id}-heading`)?.focus()); } }} marketName={marketName} timezone={timezone} />;
 
   return <section id="bet-builder" className="stack bet-builder" aria-labelledby={`${id}-heading`}>
-    <div className="section-heading"><div><p className="eyebrow">Your numbers. Your combination.</p><h2 id={`${id}-heading`} tabIndex={-1} className="type-section-title">Build your selections</h2></div><span className="builder-draft-label"><Layers3 size={16} aria-hidden="true" />Draft only</span></div>
+    <div className="section-heading"><div><p className="eyebrow">Your numbers. Your combination.</p><h2 id={`${id}-heading`} tabIndex={-1} className="type-section-title">Build your selections</h2></div><span className="builder-draft-label"><Layers3 size={16} aria-hidden="true" />Not submitted</span></div>
     <div className="builder-layout">
       <GlassPanel className="builder-input-panel">
         <Tabs label="Bet entry method" value={method} onValueChange={value => { if (value === "JODI" || value === "CROSSING" || value === "COPY_PASTE") setMethod(value); }} items={[
@@ -73,7 +73,7 @@ export function BetBuilder({ marketSlug, marketName, timezone, initialEntry, ini
         <div className="builder-stake"><Input label="Stake per selection (₹)" inputMode="decimal" autoComplete="off" placeholder="e.g. 10" value={stake} onChange={event => setStake(event.target.value)} maxLength={32} helperText="The same stake applies to every resulting selection." error={amount.error} />
           <div className="builder-total" role="status" aria-live="polite" aria-atomic="true"><span>Estimated total</span><strong>{amount.totalPaise === undefined ? "—" : <Money paise={amount.totalPaise} />}</strong></div>
         </div>
-        <p className="type-caption text-muted">Local draft only. Nothing is placed or saved. Final amounts and availability require server confirmation.</p>
+        <p className="type-caption text-muted">{onReview ? "Your changes are saved only after you confirm. Amounts and availability are checked again when you save." : "Your bet is placed only after review and confirmation. Amounts and availability are checked again when you place."}</p>
         <Button disabled={!!preview.error || !!amount.error || !amount.totalPaise} onClick={() => { const request = { ...entry, marketSlug, stakePaise: rupeesToPaise(stake) }; if (onReview) onReview(request); else void transaction.review(request); }}>{onReview ? "Review changes" : "Review bet"}</Button>
       </GlassCard>
     </div>

@@ -23,7 +23,7 @@ export function MyBets() {
         <div className="between"><p className="type-body-small text-secondary">{bet.totalSelections} selections · <span className="my-bet-numbers">{bet.selections.slice(0, 8).map(s => s.number).join(" · ")}{bet.selections.length > 8 ? " …" : ""}</span></p><Link className="text-link" href={`/my-bets/${encodeURIComponent(bet.publicRef)}`}>View bet →</Link></div>
         <dl className="bet-facts"><BetOutcome bet={bet} /></dl>
       </GlassCard></li>)}</ul>}
-      <nav className="bet-review-actions" aria-label="Bet history pages"><Button variant="secondary" disabled={!cursors.length} onClick={() => setCursors(current => current.slice(0, -1))}>Newer bets</Button><span className="type-caption text-secondary" role="status">Page {cursors.length + 1}</span><Button variant="secondary" disabled={!api.data.nextCursor} onClick={() => { const next = api.data?.nextCursor; if (next) setCursors(current => [...current, next]); }}>Older bets</Button></nav>
+      <nav className="wallet-pagination" aria-label="Bet history pages"><Button variant="secondary" disabled={!cursors.length} onClick={() => setCursors(current => current.slice(0, -1))}>Newer bets</Button><span className="type-caption text-secondary" role="status">Page {cursors.length + 1}</span><Button variant="secondary" disabled={!api.data.nextCursor} onClick={() => { const next = api.data?.nextCursor; if (next) setCursors(current => [...current, next]); }}>Older bets</Button></nav>
     </>}
   </section>;
 }
