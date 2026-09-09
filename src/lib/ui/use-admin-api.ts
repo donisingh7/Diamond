@@ -51,7 +51,7 @@ export function useAdminPage<T>(path: string, initialFilters = "") {
   };
 }
 
-export type AdminJob = { url: string; method?: "POST" | "DELETE"; body?: object; title: string; description: string; confirmLabel?: string; destructive?: boolean; confirmationText?: string; replaySafe?: boolean };
+export type AdminJob = { url: string; method?: "POST" | "PATCH" | "DELETE"; body?: object; title: string; description: string; confirmLabel?: string; destructive?: boolean; confirmationText?: string; replaySafe?: boolean };
 export function useAdminMutation<T>() {
   const [job, setJob] = useState<(Omit<AdminJob, "body"> & { body?: string })>();
   const [busy, setBusy] = useState(false);
