@@ -88,7 +88,7 @@ describe("canonical schemas", () => {
     await withdrawal.validate();
   });
   it("registers exactly the canonical collections and critical TTL/unique indexes", () => {
-    expect(models.map((model) => model.collection.collectionName)).toEqual(["users", "sessions", "otpRequests", "wallets", "walletTransactions", "markets", "marketRounds", "bets", "betRevisions", "withdrawals", "auditLogs", "platformSettings"]);
+    expect(models.map((model) => model.collection.collectionName)).toEqual(["users", "sessions", "otpRequests", "wallets", "walletTransactions", "markets", "marketRounds", "bets", "betRevisions", "withdrawals", "auditLogs", "platformSettings", "paymentMethods", "depositRequests", "proofImages"]);
     for (const model of [Session, OtpRequest]) expect(model.schema.indexes()).toContainEqual([{ expiresAt: 1 }, { expireAfterSeconds: 0 }]);
     expect(Bet.schema.indexes()).toContainEqual([{ userId: 1, clientRequestId: 1 }, { unique: true }]);
     expect(WalletTransaction.schema.indexes()).toContainEqual([{ idempotencyKey: 1 }, { unique: true }]);

@@ -32,7 +32,7 @@ export type { WalletTransactionType } from "../models/wallet-transaction.model";
 /** Movement types that add to `availableBalancePaise`. */
 export type AvailableCreditType = Extract<
   WalletTransactionType,
-  "MOCK_DEPOSIT" | "BET_EDIT_REFUND" | "WIN_CREDIT" | "ADMIN_CREDIT"
+  "MOCK_DEPOSIT" | "BET_EDIT_REFUND" | "WIN_CREDIT" | "ADMIN_CREDIT" | "DEPOSIT_CREDIT"
 >;
 /** Movement types that subtract from `availableBalancePaise`. */
 export type AvailableDebitType = Extract<
@@ -55,6 +55,7 @@ export function movementDeltas(type: WalletTransactionType, amountPaise: number)
     case "BET_EDIT_REFUND":
     case "WIN_CREDIT":
     case "ADMIN_CREDIT":
+    case "DEPOSIT_CREDIT":
       return { availableDeltaPaise: amountPaise, reservedDeltaPaise: 0 };
     case "BET_PLACED":
     case "BET_EDIT_DEBIT":
