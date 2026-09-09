@@ -5,6 +5,9 @@ import { safeAdd } from "@/lib/money";
 export const walletTransactionTypes = [
   "MOCK_DEPOSIT", "BET_PLACED", "BET_EDIT_DEBIT", "BET_EDIT_REFUND", "WIN_CREDIT",
   "WITHDRAWAL_RESERVED", "WITHDRAWAL_RELEASED", "WITHDRAWAL_APPROVED", "ADMIN_CREDIT", "ADMIN_DEBIT",
+  // Window 10A — manual Add Money. One immutable row per admin-approved DepositRequest, added
+  // in the same transaction as the PENDING → APPROVED transition. Credits available only.
+  "DEPOSIT_CREDIT",
 ] as const;
 export type WalletTransactionType = (typeof walletTransactionTypes)[number];
 export const walletTransactionSchema = new Schema({

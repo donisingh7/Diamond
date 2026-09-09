@@ -38,6 +38,7 @@ const DEMO = {
 const CANONICAL = [
   "users", "sessions", "otpRequests", "wallets", "walletTransactions", "markets",
   "marketRounds", "bets", "betRevisions", "withdrawals", "auditLogs", "platformSettings",
+  "paymentMethods", "depositRequests", "proofImages",
 ];
 
 let replica: MongoMemoryReplSet | undefined;
@@ -77,12 +78,12 @@ async function collectionNames(dbName: string): Promise<string[]> {
 
 // --------------------------------------------------------------------------------------------
 describe("npm run db:provision", () => {
-  it("first run ensures all 12 canonical collections; a second run is a non-destructive no-op", async () => {
+  it("first run ensures all 15 canonical collections; a second run is a non-destructive no-op", async () => {
     const dbName = "diamond_test_provision";
     const env = { ...process.env, MONGODB_URI: uriFor(dbName) };
 
     const first = await run(process.execPath, cliArgs("provision-db.ts"), { windowsHide: true, env });
-    expect(first.stdout).toContain("Collections present (12)");
+    expect(first.stdout).toContain("Collections present (15)");
     for (const name of CANONICAL) expect(first.stdout).toContain(name);
 
     expect(await collectionNames(dbName)).toEqual([...CANONICAL].sort());
@@ -96,7 +97,7 @@ describe("npm run db:provision", () => {
 
     const second = await run(process.execPath, cliArgs("provision-db.ts"), { windowsHide: true, env });
     expect(second.stdout).toContain("Canonical collections created this run: 0");
-    expect(second.stdout).toContain("Collections present (12)");
+    expect(second.stdout).toContain("Collections present (15)");
 
     const check = mongoose.createConnection(uriFor(dbName));
     await check.asPromise();
@@ -216,7 +217,7 @@ describe("npm run db:seed-demo", () => {
 
 // --------------------------------------------------------------------------------------------
 describe("model registry", () => {
-  it("still registers exactly the 12 canonical collections (no competing collection added)", () => {
+  it("still registers exactly the 15 canonical collections (no competing collection added)", () => {
     expect(models.map((m) => m.collection.collectionName).sort()).toEqual([...CANONICAL].sort());
     expect(Types.ObjectId.isValid(new Types.ObjectId())).toBe(true);
   });

@@ -10,7 +10,7 @@ import { runScript } from "./runtime";
  *
  * Ensures the configured MongoDB is fully shaped so every canonical collection is visible in
  * Atlas / Compass / Explorer even when empty:
- *   1. creates any of the 12 canonical collections that do not yet exist (never drops one),
+ *   1. creates any of the 15 canonical collections that do not yet exist (never drops one),
  *   2. ensures every declared index via `createIndexes` — additive only, it never drops a live
  *      or unknown index the way `syncIndexes` would,
  *   3. ensures the foundational six markets + the platform-settings singleton via `$setOnInsert`
@@ -33,6 +33,10 @@ const CANONICAL_COLLECTIONS = [
   "withdrawals",
   "auditLogs",
   "platformSettings",
+  // Window 10A — manual Add Money.
+  "paymentMethods",
+  "depositRequests",
+  "proofImages",
 ] as const;
 
 void runScript(async () => {
@@ -43,7 +47,7 @@ void runScript(async () => {
   const registered = [...models.map((model) => model.collection.collectionName)].sort();
   const expected = [...CANONICAL_COLLECTIONS].sort();
   if (JSON.stringify(registered) !== JSON.stringify(expected)) {
-    throw new Error("Model registry does not match the 12 canonical collections; aborting provisioning.");
+    throw new Error(`Model registry does not match the ${CANONICAL_COLLECTIONS.length} canonical collections; aborting provisioning.`);
   }
 
   const present = new Set((await db.listCollections().toArray()).map((collection) => collection.name));

@@ -43,6 +43,7 @@ describe("movementDeltas — frozen type → balance movement table", () => {
     ["BET_EDIT_REFUND", { availableDeltaPaise: A, reservedDeltaPaise: 0 }],
     ["WIN_CREDIT", { availableDeltaPaise: A, reservedDeltaPaise: 0 }],
     ["ADMIN_CREDIT", { availableDeltaPaise: A, reservedDeltaPaise: 0 }],
+    ["DEPOSIT_CREDIT", { availableDeltaPaise: A, reservedDeltaPaise: 0 }],
     ["BET_PLACED", { availableDeltaPaise: -A, reservedDeltaPaise: 0 }],
     ["BET_EDIT_DEBIT", { availableDeltaPaise: -A, reservedDeltaPaise: 0 }],
     ["ADMIN_DEBIT", { availableDeltaPaise: -A, reservedDeltaPaise: 0 }],

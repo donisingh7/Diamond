@@ -1286,3 +1286,38 @@ WITHDRAW_RESERVE:<withdrawalId>
 ```
 
 Exact implementation may use another clean deterministic scheme.
+
+---
+
+## WINDOW 10A — MANUAL ADD MONEY (DEPOSITS)
+
+New ledger type **`DEPOSIT_CREDIT`** → `+amount` available, reserved unchanged; mirrors the
+other credit types in `movementDeltas` and the `walletTransactions` `pre('validate')` table.
+Deterministic idempotency key `DEPOSIT_CREDIT:<depositRequestId>` (unique in `walletTransactions`).
+
+**Payment methods (admin-configured pay-to destinations).** `UPI` (`upiId` + optional QR image)
+or `BANK` (`accountHolderName` + `bankName` + `accountNumber` + `ifsc`). `type` is immutable.
+`isActive` gates player visibility; a method is **never hard-deleted** — deactivation keeps the
+row so historical requests stay explicable. Players see ACTIVE methods only, with full pay-to
+coordinates. Audited `PAYMENT_METHOD_CREATED` / `PAYMENT_METHOD_UPDATED` (account number masked
+`••••1234` in every audit row).
+
+**Deposit request lifecycle.**
+- submit (PLAYER): `requestedAmountPaise > 0`, a mandatory UTR and a mandatory proof image
+  (the caller's own `DEPOSIT_PROOF`). The chosen method must be ACTIVE at submit time; its
+  display coordinates are frozen into `paymentMethodSnapshot` (account number stored masked).
+  `normalizedUtr` (upper-cased, `[^A-Z0-9]` stripped) is **globally unique** — one transfer
+  backs one request (`DUPLICATE_UTR`). Retry-safe on `(userId, clientRequestId)`.
+- approve (ADMIN): only `PENDING`. `approvedAmountPaise > 0` and MAY be **lower or higher** than
+  `requestedAmountPaise`; the requested figure is never overwritten. If the two differ,
+  `adminRemark` is REQUIRED. ONE transaction: `PENDING → APPROVED` (status CAS) + one
+  `DEPOSIT_CREDIT` (available += approved) + one `DEPOSIT_APPROVED` audit row. Double-click /
+  retry / concurrency credit **at most once** (CAS + unique key). `reviewedByAdminId` /
+  `reviewedAt` recorded.
+- reject (ADMIN): only `PENDING`, `adminRemark` REQUIRED, `PENDING → REJECTED`, **no wallet
+  movement**, `DEPOSIT_REJECTED` audit. A rejected request can never later credit.
+
+**Image storage.** `proofImages` — one image per document as BSON binary (`data` `select:false`),
+hard-capped at 5 MiB, MIME allow-list PNG/JPEG/WebP, validated before the doc is built. Never
+the (ephemeral on Vercel) filesystem, never base64 inside a business document. Read is always
+authorized: `QR` → any signed-in user; `DEPOSIT_PROOF` → owner or admin.

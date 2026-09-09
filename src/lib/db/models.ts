@@ -10,8 +10,11 @@ import { BetRevision } from "@/modules/betting/models/bet-revision.model";
 import { Withdrawal } from "@/modules/withdrawals/models/withdrawal.model";
 import { AuditLog } from "@/modules/audit/models/audit-log.model";
 import { PlatformSettings } from "@/modules/settings/models/platform-settings.model";
+import { PaymentMethod } from "@/modules/payments/models/payment-method.model";
+import { DepositRequest } from "@/modules/payments/models/deposit-request.model";
+import { ProofImage } from "@/modules/payments/models/proof-image.model";
 
-export const models = [User, Session, OtpRequest, Wallet, WalletTransaction, Market, MarketRound, Bet, BetRevision, Withdrawal, AuditLog, PlatformSettings] as const;
+export const models = [User, Session, OtpRequest, Wallet, WalletTransaction, Market, MarketRound, Bet, BetRevision, Withdrawal, AuditLog, PlatformSettings, PaymentMethod, DepositRequest, ProofImage] as const;
 
 /** Add declared indexes; never drop existing indexes as syncIndexes would. */
 export async function ensureIndexes(): Promise<void> {

@@ -624,3 +624,67 @@ one wins, one result, one audit.
 `Bet` status, never writes `WIN_CREDIT`, never moves a wallet, and leaves `settlementStatus` at
 `PENDING`. Payout-rate changes affect only future bet placements; every existing
 `bets.payoutMultiplierSnapshot` is untouched. Settlement is Window 7A.
+
+---
+
+## Window 10A — Manual Add Money (deposit requests + payment methods)
+
+No payment gateway. A player pays an admin-configured destination **outside Diamond**, uploads a
+proof screenshot + the UTR, and raises a `DepositRequest` (PENDING). An admin verifies it and
+either **approves** (crediting `approvedAmountPaise`, which MAY differ from the requested amount)
+or **rejects** (credits nothing). Every mutation is `apiRoute` + `isTrustedOrigin` + strict Zod.
+
+### Player
+
+- `GET /api/deposits/payment-methods` → `{ paymentMethods: PaymentMethodPlayerDTO[], serverNow }`.
+  ACTIVE methods only, `sortOrder` then `_id`, with the full coordinates needed to pay
+  (`upiId` / `accountHolderName` / `bankName` / `accountNumber` / `ifsc` / `qrImageId`).
+- `POST /api/deposits/proof` — multipart `file` (PNG/JPEG/WebP, ≤ 5 MiB). Stored as BSON binary
+  in `proofImages` (never the filesystem), owned by the caller. → `{ proofImageId, contentType, sizeBytes }`.
+- `POST /api/deposits` — `.strict()` `{ paymentMethodId, requestedAmountPaise>0, utr, proofImageId, clientRequestId }`.
+  Creates a PENDING request with a frozen `paymentMethodSnapshot` (account number masked). The
+  method must be ACTIVE (`422 PAYMENT_METHOD_INACTIVE` / `404 PAYMENT_METHOD_NOT_FOUND`), the
+  proof must be the caller's own `DEPOSIT_PROOF` (`404 IMAGE_NOT_FOUND`), and the normalized UTR
+  (upper-cased, non-alphanumerics stripped) is unique across ALL requests (`409 DUPLICATE_UTR`).
+  Retry-safe: same `(userId, clientRequestId)` returns the original with no second row.
+  → `{ deposit: PlayerDepositRequestDTO, serverNow }`.
+- `GET /api/deposits?status=&limit=&cursor=` → `{ deposits: PlayerDepositRequestDTO[], nextCursor }`.
+  Caller's own only, newest `submittedAt` first, bounded (1–50, default 20), opaque `(submittedAt,_id)` cursor.
+- `GET /api/deposits/[id]` → `{ deposit }`. Missing OR non-owned = `404 DEPOSIT_REQUEST_NOT_FOUND`.
+- `GET /api/deposits/proof/[id]` → raw image bytes. A `QR` is readable by any signed-in user; a
+  `DEPOSIT_PROOF` only by its owner or an admin. A miss / unauthorized hit are the same `404 IMAGE_NOT_FOUND`.
+
+### Admin
+
+- `GET /api/admin/payment-methods` → every method (masked account numbers), display order.
+- `POST /api/admin/payment-methods` — `.strict()` discriminated on `type`:
+  `UPI { displayName, upiId, qrImageId?, instructions?, isActive?, sortOrder? }` /
+  `BANK { displayName, accountHolderName, bankName, accountNumber, ifsc, instructions?, isActive?, sortOrder? }`.
+  Audited `PAYMENT_METHOD_CREATED`. `type` is immutable thereafter.
+- `PATCH /api/admin/payment-methods/[id]` — partial `.strict()` update; a field belonging to the
+  other kind is `400 INVALID_INPUT`. `isActive:false` deactivates (never a delete). Audited
+  `PAYMENT_METHOD_UPDATED` with a masked before/after.
+- `POST /api/admin/payment-methods/qr` — multipart `file` → `{ qrImageId, contentType, sizeBytes }`
+  (a `kind: "QR"` image).
+- `GET /api/admin/deposits?status=&userId=&limit=&cursor=` → `{ deposits: AdminDepositRequestDTO[], nextCursor }`
+  (1–100, default 25).
+- `GET /api/admin/deposits/[id]` → `{ deposit: AdminDepositRequestDTO }`.
+- `POST /api/admin/deposits/[id]/approve` — `.strict()` `{ approvedAmountPaise>0, adminRemark?, clientRequestId }`.
+  Only PENDING transitions (`409 DEPOSIT_NOT_PENDING`). When `approvedAmountPaise != requestedAmountPaise`,
+  `adminRemark` is REQUIRED (`400 INVALID_INPUT`). ONE Mongo transaction: PENDING → APPROVED
+  (`requestedAmountPaise` untouched) + one `DEPOSIT_CREDIT` ledger row keyed `DEPOSIT_CREDIT:<id>`
+  (`available += approvedAmountPaise`, reserved unchanged) + one `DEPOSIT_APPROVED` audit row.
+  Double-click / retry / concurrent calls credit **at most once** (status CAS + unique idempotency key).
+- `POST /api/admin/deposits/[id]/reject` — `.strict()` `{ adminRemark (required), clientRequestId }`.
+  PENDING → REJECTED, NO wallet movement, `DEPOSIT_REJECTED` audit. A rejected request can never later credit.
+
+`PlayerDepositRequestDTO` = `{ id, status, requestedAmountPaise, approvedAmountPaise|null,
+paymentMethodId, paymentMethodSnapshot: { type, displayName, instructions|null, upiId|null,
+accountHolderName|null, bankName|null, accountNumberMasked|null, ifsc|null }, utr, proofImageId,
+adminRemark|null, submittedAt, reviewedAt|null, createdAt, updatedAt }`. Never `userId`,
+`normalizedUtr` or `reviewedByAdminId`.
+`AdminDepositRequestDTO` = `PlayerDepositRequestDTO` + `{ userId, reviewedByAdminId|null }` (still no `normalizedUtr`).
+
+New error codes: `PAYMENT_METHOD_NOT_FOUND` (404), `PAYMENT_METHOD_INACTIVE` (422),
+`DEPOSIT_REQUEST_NOT_FOUND` (404), `DEPOSIT_NOT_PENDING` (409), `DUPLICATE_UTR` (409),
+`INVALID_IMAGE` (400), `IMAGE_NOT_FOUND` (404).

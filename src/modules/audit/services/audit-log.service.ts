@@ -34,6 +34,13 @@ export const auditActions = [
   // Window 7A2 — admin settlement orchestration. One row per round that an admin actually
   // carried to `SETTLED`; a harmless replay of the trigger adds no further row.
   "ROUND_SETTLED",
+  // Window 10A — manual Add Money. Payment-method lifecycle (create / update, which covers
+  // activate + deactivate via `isActive`) and the two deposit-review outcomes. Metadata never
+  // carries a full account number or any secret.
+  "PAYMENT_METHOD_CREATED",
+  "PAYMENT_METHOD_UPDATED",
+  "DEPOSIT_APPROVED",
+  "DEPOSIT_REJECTED",
 ] as const;
 export type AuditAction = (typeof auditActions)[number];
 

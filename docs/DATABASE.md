@@ -734,3 +734,36 @@ New error codes in `lib/errors/domain-error.ts`: `RESULT_TOO_EARLY` (422),
 The four new indexes are picked up by `ensureIndexes()` (additive `createIndexes`, never
 `syncIndexes`) and by `npm run db:provision` (non-destructive). They were not applied to the
 configured Atlas deployment in this window.
+
+---
+
+## Window 10A — Manual Add Money
+
+Three new canonical collections (registry + `npm run db:provision` updated; total 15):
+
+- **`paymentMethods`** — admin pay-to destinations. `schemaOptions` (`strict:"throw"`,
+  optimistic concurrency). `pre('validate')` cross-checks that a `UPI` row carries no bank
+  columns and a `BANK` row carries all four + no UPI columns. Index
+  `{ isActive: 1, sortOrder: 1, _id: 1 }` for the player's ordered active list. Never deleted.
+- **`depositRequests`** — one per player Add Money claim. `requestedAmountPaise` /
+  `paymentMethodId` / `paymentMethodSnapshot` / `utr` / `normalizedUtr` / `proofImageId` /
+  `submittedAt` are `immutable`; the admin's editable figure lives in the separate
+  `approvedAmountPaise`. `pre('validate')`: PENDING carries no review fields; APPROVED needs a
+  positive `approvedAmountPaise` + reviewer + timestamp, and a remark when it differs from
+  requested; REJECTED needs a remark and no approved amount. Indexes:
+  `{ userId: 1, clientRequestId: 1 }` **unique** (retry idempotency),
+  `{ normalizedUtr: 1 }` **unique** (duplicate-transfer protection),
+  `{ status: 1, submittedAt: -1, _id: -1 }` (admin queue),
+  `{ userId: 1, submittedAt: -1, _id: -1 }` (player list),
+  `{ submittedAt: -1, _id: -1 }` (global admin cursor).
+- **`proofImages`** — QR + deposit-proof binaries. `data: Buffer` is `select:false`; `sizeBytes`
+  hard-capped at 5 MiB in the schema and the service. Indexes `{ ownerId: 1, createdAt: -1 }`,
+  `{ kind: 1, createdAt: -1 }`. Not GridFS — a single capped binary collection, fully within the
+  16 MB BSON document limit, keeps provisioning + the model registry uniform.
+
+New `walletTransactions` type `DEPOSIT_CREDIT` reuses the existing unique `{ idempotencyKey: 1 }`
+index (`DEPOSIT_CREDIT:<depositRequestId>`). No change to any existing collection or index.
+
+All indexes are additive (`ensureIndexes()` → `createIndexes`, never `syncIndexes`) and picked
+up by `npm run db:provision` (non-destructive). They were NOT applied to the configured Atlas
+deployment in this window.
