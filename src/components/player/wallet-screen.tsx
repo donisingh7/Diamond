@@ -21,7 +21,6 @@ const transactionLabels: Record<WalletTransactionType | "DEPOSIT_CREDIT", string
   BET_PLACED: "Bet placed", BET_EDIT_DEBIT: "Bet edit · additional stake", BET_EDIT_REFUND: "Bet edit · refund",
   WIN_CREDIT: "Winnings credited", WITHDRAWAL_RESERVED: "Withdrawal reserved", WITHDRAWAL_RELEASED: "Withdrawal funds released",
   WITHDRAWAL_APPROVED: "Withdrawal approved", ADMIN_CREDIT: "Manual credit", ADMIN_DEBIT: "Manual debit", MOCK_DEPOSIT: "Mock deposit",
-  DEPOSIT_CREDIT: "Deposit approved",
 };
 const statuses: Record<WithdrawalStatus, { label: string; tone: Tone }> = {
   PENDING: { label: "Pending", tone: "warning" }, APPROVED: { label: "Approved", tone: "success" },
