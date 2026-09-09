@@ -14,8 +14,10 @@ import { GlassCard, GlassPanel } from "@/components/ui/surface";
 import { usePlayerWallet } from "./player-account";
 import { BetTime } from "./bet-presentation";
 import { WithdrawalForm } from "./withdrawal-form";
+import { DepositPanel } from "./deposit-panel";
 
-const transactionLabels: Record<WalletTransactionType, string> = {
+const transactionLabels: Record<WalletTransactionType | "DEPOSIT_CREDIT", string> = {
+  DEPOSIT_CREDIT: "Deposit approved",
   BET_PLACED: "Bet placed", BET_EDIT_DEBIT: "Bet edit · additional stake", BET_EDIT_REFUND: "Bet edit · refund",
   WIN_CREDIT: "Winnings credited", WITHDRAWAL_RESERVED: "Withdrawal reserved", WITHDRAWAL_RELEASED: "Withdrawal funds released",
   WITHDRAWAL_APPROVED: "Withdrawal approved", ADMIN_CREDIT: "Manual credit", ADMIN_DEBIT: "Manual debit", MOCK_DEPOSIT: "Mock deposit",
@@ -45,11 +47,13 @@ export function WalletScreen() {
   const [cancelling, setCancelling] = useState<WithdrawalDTO>();
   const [notice, setNotice] = useState<WithdrawalReceipt>();
   const [refreshing, setRefreshing] = useState(false);
+  const [depositRefresh, setDepositRefresh] = useState(0);
   const cancelHeading = useRef<HTMLHeadingElement>(null);
   const cancelOrigin = useRef<HTMLButtonElement | null>(null);
   useEffect(() => { if (cancelling) cancelHeading.current?.focus(); }, [cancelling]);
 
   async function refreshAll() {
+    setDepositRefresh(value => value + 1);
     setRefreshing(true);
     try { await Promise.all([wallet.refresh(), transactions.refresh(), withdrawals.refresh()]); }
     finally { setRefreshing(false); }
@@ -62,7 +66,7 @@ export function WalletScreen() {
   }
 
   return <section className="stack-lg wallet-page" aria-labelledby="wallet-heading">
-    <div className="section-heading"><div><p className="eyebrow">Your funds, clearly accounted for</p><h1 id="wallet-heading" className="type-page-title">Wallet</h1><p className="type-body-small text-secondary">Balances, withdrawals and a record of every movement.</p></div><div className="wallet-actions"><a className="button button--primary" href="#withdrawal-request-heading">Request withdrawal</a><Button variant="secondary" loading={refreshing} onClick={() => void refreshAll()}>Refresh wallet</Button></div></div>
+    <div className="section-heading"><div><p className="eyebrow">Your funds, clearly accounted for</p><h1 id="wallet-heading" className="type-page-title">Wallet</h1><p className="type-body-small text-secondary">Balances, deposits, withdrawals and a record of every movement.</p></div><div className="wallet-actions"><a className="button button--primary" href="#add-money-heading">Add Money</a><a className="button button--secondary" href="#withdrawal-request-heading">Request withdrawal</a><Button variant="secondary" loading={refreshing} onClick={() => void refreshAll()}>Refresh wallet</Button></div></div>
     {notice && <Alert tone="success" title={notice.withdrawal.status === "CANCELLED" ? "Withdrawal cancelled" : "Withdrawal request confirmed"}><Money paise={notice.withdrawal.amountPaise} /> · {notice.withdrawal.destination.summary} · {statuses[notice.withdrawal.status].label}</Alert>}
     <div className="wallet-overview-layout"><div className="stack">
       {wallet.loading ? <CardSkeleton /> : wallet.error || !wallet.data ? <ErrorState title="Balance unavailable" description={wallet.error} action={<Button onClick={() => void wallet.refresh()}>Try again</Button>} /> : <GlassCard className="wallet-summary">
@@ -83,6 +87,7 @@ export function WalletScreen() {
         <HistoryPages label="Transaction history pages" page={transactionCursors.length + 1} next={transactions.data?.nextCursor} loading={transactions.loading} onBack={() => setTransactionCursors(current => current.slice(0, -1))} onNext={cursor => setTransactionCursors(current => [...current, cursor])} />
       </GlassPanel>
     </div><WithdrawalForm availablePaise={wallet.data?.wallet.availableBalancePaise} onSuccess={onSuccess} /></div>
+    <DepositPanel refreshVersion={depositRefresh} onSuccess={() => { setTransactionCursors([]); void refreshAll(); }} />
     <GlassPanel className="stack wallet-history" aria-labelledby="withdrawals-heading">
       <div><h2 id="withdrawals-heading" tabIndex={-1} className="type-section-title">Withdrawal history</h2><p className="type-caption text-secondary">Latest first · Destinations are masked</p></div>
       {cancelling && cancel.pending && <div className="stack withdrawal-cancel" role="region" aria-label="Confirm withdrawal cancellation">

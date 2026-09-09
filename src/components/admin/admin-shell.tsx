@@ -4,7 +4,7 @@ import { ThemeToggle } from "@/components/ui/theme-toggle";
 
 import { useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, UsersRound, Store, ChartNoAxesCombined, Ticket, Layers3, ArrowUpRight, Gauge, ScrollText, LogOut, PanelLeftClose, PanelLeftOpen, Menu, UserRound } from "lucide-react";
+import { LayoutDashboard, UsersRound, Store, ChartNoAxesCombined, Ticket, Layers3, ArrowUpRight, ArrowDownLeft, Landmark, Gauge, ScrollText, LogOut, PanelLeftClose, PanelLeftOpen, Menu, UserRound } from "lucide-react";
 import { Brand, NavItem, ProfileMenu, type NavigationItem } from "@/components/shared/navigation";
 import { IconButton } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/overlay";
@@ -17,6 +17,8 @@ export const adminNavigation: NavigationItem[] = [
   { label: "Settlement", href: "/admin/settlement", icon: Layers3 },
   { label: "Bets", href: "/admin/bets", icon: Ticket },
   { label: "Withdrawals", href: "/admin/withdrawals", icon: ArrowUpRight },
+  { label: "Deposits", href: "/admin/deposits", icon: ArrowDownLeft },
+  { label: "Payment Methods", href: "/admin/payment-methods", icon: Landmark },
   { label: "Payout Rate", href: "/admin/game-rate", icon: Gauge },
   { label: "Audit Log", href: "/admin/audit", icon: ScrollText },
 ];

@@ -4,6 +4,8 @@ import { AdminPlayers, AdminPlayer } from "@/components/admin/admin-players";
 import { AdminBets, AdminBet } from "@/components/admin/admin-bets";
 import { AdminWithdrawals, AdminWithdrawal, AdminPlayerWithdrawals } from "@/components/admin/admin-withdrawals";
 import { AdminMarkets, AdminResults, AdminSettlement } from "@/components/admin/admin-markets";
+import { AdminPaymentMethods } from "@/components/admin/admin-payment-methods";
+import { AdminDeposits, AdminDepositDetail } from "@/components/admin/admin-deposits";
 
 export const metadata = { title: "Admin operations · Diamond" };
 export default async function AdminSectionPage({ params }: { params: Promise<{ section: string[] }> }) {
@@ -15,6 +17,8 @@ export default async function AdminSectionPage({ params }: { params: Promise<{ s
       case "players": return <AdminPlayers />;
       case "bets": return <AdminBets />;
       case "withdrawals": return <AdminWithdrawals />;
+      case "deposits": return <AdminDeposits />;
+      case "payment-methods": return <AdminPaymentMethods />;
       case "markets": return <AdminMarkets />;
       case "results": return <AdminResults />;
       case "settlement": return <AdminSettlement />;
@@ -26,6 +30,7 @@ export default async function AdminSectionPage({ params }: { params: Promise<{ s
     if (area === "players") return <AdminPlayer key={id} id={id} />;
     if (area === "bets") return <AdminBet key={id} reference={id} />;
     if (area === "withdrawals") return <AdminWithdrawal key={id} id={id} />;
+    if (area === "deposits") return <AdminDepositDetail key={id} id={id} />;
     if (area === "results") return <AdminResults key={id} initialMarket={id} />;
   }
   if (section.length === 3 && id && detail) {

@@ -1,5 +1,33 @@
 @import "tailwindcss";
 
+/* Manual payments: readable coordinates, proof and server-confirmed amounts. */
+.deposit-layout { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 24px; align-items: start; }
+.deposit-layout > *,.deposit-form,.deposit-record,.payment-details,.payment-upload { min-width: 0; overflow-wrap: anywhere; }
+.payment-options { display: grid; gap: 12px; border: 0; margin: 0; padding: 0; min-width: 0; }
+.payment-options legend { margin-bottom: 12px; }
+.payment-options label { display: flex; align-items: center; gap: 12px; padding: 16px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--input); cursor: pointer; }
+.payment-options label:has(:checked) { border-color: var(--accent); background: var(--accent-subtle); }
+.payment-options input { width: 20px; height: 20px; flex-shrink: 0; accent-color: var(--accent); }
+.payment-options span { min-width: 0; }
+.payment-options small { display: block; margin-top: 4px; color: var(--text-secondary); }
+.payment-image { display: block; width: 100%; max-width: 520px; align-self: start; padding: 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: #fff; }
+.payment-image img { display: block; width: 100%; height: auto; max-height: 560px; object-fit: contain; }
+.payment-image--qr { max-width: 288px; padding: 20px; }
+.payment-upload .payment-image:not(.payment-image--qr) { max-width: 280px; }
+.payment-upload input[type="file"] { min-width: 0; width: 100%; font-size: .875rem; }
+.payment-facts { display: grid; gap: 12px; margin: 0; }
+.payment-facts dt,.deposit-amounts dt { color: var(--text-secondary); font-size: .8125rem; }
+.payment-facts dd { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 4px 0 0; }
+.payment-facts dd > span:first-child { user-select: text; overflow-wrap: anywhere; font-weight: 600; }
+.payment-instructions { white-space: pre-wrap; overflow-wrap: anywhere; }
+.payment-textarea textarea { min-width: 0; width: 100%; resize: vertical; padding: 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--input); color: var(--text-primary); font: inherit; font-size: 1rem; }
+.deposit-amounts { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,130px),1fr)); gap: 16px; margin: 0; }
+.deposit-amounts > div { min-width: 0; }
+.deposit-amounts dd { margin: 6px 0 0; font-size: 1.125rem; font-weight: 600; }
+.deposit-difference { border-left: 3px solid var(--gaming-gold); padding-left: 12px; }
+.deposit-layout .money { white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 1100px) { .deposit-layout { grid-template-columns: minmax(0,1fr); } }
+
 /* Operational admin screens share Diamond's Light/Dark materials. */
 .admin-operations,.admin-operations > * { min-width: 0; }
 .admin-operations { overflow-wrap: anywhere; }
